@@ -1038,7 +1038,7 @@ class MainWindow(QMainWindow):
         if not text:
             return
             
-        links = [line.strip() for line in text.split('\n') if line.strip() and line.startswith('http')]
+        links = [line.strip().lstrip("- ") for line in text.split('\n') if line.strip() and line.lstrip("- ").startswith('http')]
         if not links:
             return
             
