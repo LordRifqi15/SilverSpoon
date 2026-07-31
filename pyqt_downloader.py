@@ -21,10 +21,39 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTextEdit, QTreeWidget,
     QTreeWidgetItem, QHeaderView, QFileDialog, QAbstractItemView,
     QCheckBox, QDialog, QFormLayout, QSpinBox, QDialogButtonBox,
-    QMessageBox, QInputDialog, QSplashScreen, QMenu
+    QMessageBox, QInputDialog, QSplashScreen, QMenu, QStyledItemDelegate
 )
-from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QPixmap
+from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QPixmap, QColor, QBrush
 from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent
+
+class ProgressBarDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        if index.column() == 0:
+            item = self.parent().itemFromIndex(index)
+            if item:
+                progress = item.data(0, Qt.ItemDataRole.UserRole)
+                status = item.data(1, Qt.ItemDataRole.UserRole)
+                
+                if progress is not None and isinstance(progress, (int, float)):
+                    if status == "Error" or status == "Contains Errors":
+                        bg_color = QColor(231, 76, 60, 50) # Light Red
+                    elif status in ("Completed", "Extracted"):
+                        bg_color = QColor(46, 204, 113, 50) # Light Green
+                    else:
+                        bg_color = QColor(52, 152, 219, 50) # Light Blue
+                    
+                    # Calculate progress width
+                    rect = option.rect
+                    progress_width = int(rect.width() * (progress / 100.0))
+                    progress_rect = rect.adjusted(0, 0, progress_width - rect.width(), 0)
+                    
+                    painter.save()
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QBrush(bg_color))
+                    painter.drawRect(progress_rect)
+                    painter.restore()
+        
+        super().paint(painter, option, index)
 
 import cloudscraper
 from PyQt6.QtCore import QMetaObject, Q_ARG
@@ -477,6 +506,9 @@ class MainWindow(QMainWindow):
         self.tree = QTreeWidget()
         self.tree.setColumnCount(7)
         self.tree.setHeaderLabels(["Filename / Folder", "Sel", "Status", "Progress", "Speed", "ETA", "Size"])
+        
+        # Enable custom item delegates for drawing the progress bar background
+        self.tree.setItemDelegate(ProgressBarDelegate(self.tree))
         
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
@@ -1054,6 +1086,8 @@ class MainWindow(QMainWindow):
         else:
             suggested_folder = first_filename.rsplit('.', 1)[0]
             
+        suggested_folder = suggested_folder.replace('_--_fitgirl-repacks.site', '')
+            
         # Prompt user for batch folder name
         folder_name, ok = QInputDialog.getText(
             self, 
@@ -1379,6 +1413,10 @@ class MainWindow(QMainWindow):
             if task.status == "Downloading":
                 global_speed += task.speed
                 
+            # Store the progress and status in the item's data for the custom delegate to paint
+            task.tree_item.setData(0, Qt.ItemDataRole.UserRole, task.progress)
+            task.tree_item.setData(1, Qt.ItemDataRole.UserRole, task.status)
+                
         self.global_speed_label.setText(f"Global Speed: {global_speed:.2f} MB/s")
             
         # Update top-level batch folders
@@ -1400,8 +1438,20 @@ class MainWindow(QMainWindow):
                 child = batch_item.child(j)
                 task = next((t for t in self.tasks if t.tree_item == child), None)
                 if task:
-                    total_dl += task.downloaded_bytes
-                    total_size += task.total_bytes
+                    # Add task.total_bytes if it's available
+                    if hasattr(task, 'total_bytes') and task.total_bytes > 0:
+                        total_dl += getattr(task, 'downloaded_bytes', 0)
+                        total_size += task.total_bytes
+                    elif task.status == "Downloading" and hasattr(task, 'total_bytes'):
+                        total_dl += getattr(task, 'downloaded_bytes', 0)
+                        total_size += getattr(task, 'total_bytes', 0)
+                    else:
+                        # Estimate total size for UI based on largest known file
+                        ext = os.path.splitext(task.filename)[1].lower()
+                        if ext in ('.rar', '.zip'):
+                            largest_known = max([getattr(x, 'total_bytes', 0) for x in self.tasks if x.folder_name == batch_item.text(0)] + [0])
+                            total_size += largest_known
+                            
                     total_speed += getattr(task, 'speed', 0.0)
                     
                     if task.status not in ("Completed", "Extracted"):
@@ -1414,7 +1464,6 @@ class MainWindow(QMainWindow):
             # Determine batch status
             batch_status = "Queued"
             if all_completed:
-                # If all are completed but we are extracting, say Extracting...
                 if any(t.status == "Extracting..." for t in [next((t for t in self.tasks if t.tree_item == batch_item.child(k)), None) for k in range(batch_item.childCount()) if next((t for t in self.tasks if t.tree_item == batch_item.child(k)), None)]):
                     batch_status = "Extracting..."
                 else:
@@ -1433,9 +1482,27 @@ class MainWindow(QMainWindow):
             
             eta_str = "-"
             if any_downloading and total_speed > 0 and total_size > 0:
-                remaining_bytes = total_size - total_dl
-                eta_seconds = remaining_bytes / (total_speed * 1024 * 1024)
-                eta_str = self.format_eta(eta_seconds)
+                largest_known_size = 0
+                for k in range(batch_item.childCount()):
+                    t = next((x for x in self.tasks if x.tree_item == batch_item.child(k)), None)
+                    if t and hasattr(t, 'total_bytes') and t.total_bytes > largest_known_size:
+                        largest_known_size = t.total_bytes
+                
+                # Calculate ETA for the entire batch using all tasks
+                remaining_bytes_batch = 0
+                for k in range(batch_item.childCount()):
+                    t = next((x for x in self.tasks if x.tree_item == batch_item.child(k)), None)
+                    if t:
+                        if hasattr(t, 'total_bytes') and t.total_bytes > 0:
+                            remaining_bytes_batch += (t.total_bytes - getattr(t, 'downloaded_bytes', 0))
+                        else:
+                            ext = os.path.splitext(t.filename)[1].lower()
+                            if ext in ('.rar', '.zip'):
+                                remaining_bytes_batch += largest_known_size
+                        
+                if remaining_bytes_batch > 0:
+                    eta_seconds = remaining_bytes_batch / (total_speed * 1024 * 1024)
+                    eta_str = self.format_eta(eta_seconds)
             
             batch_item.setText(2, batch_status)
             batch_item.setToolTip(2, "")
@@ -1443,7 +1510,11 @@ class MainWindow(QMainWindow):
             batch_item.setText(4, speed_str)
             batch_item.setText(5, eta_str)
             batch_item.setText(6, size_str)
-
+            
+            # Store the progress and status in the item's data for the custom delegate to paint
+            batch_item.setData(0, Qt.ItemDataRole.UserRole, prog)
+            batch_item.setData(1, Qt.ItemDataRole.UserRole, batch_status)
+            
     def download_manager(self):
         while True:
             active = sum(1 for t in self.tasks if t.status in ("Downloading", "Starting..."))
@@ -1474,12 +1545,8 @@ class MainWindow(QMainWindow):
             if folder_name in self.extracted_folders:
                 continue
                 
-            # If all tasks in this group are downloaded/completed
-            # Exclude batches that contain errors, cancelled, paused, queued, etc.
-            # We ONLY want to trigger extraction if everything is completed or extracted.
             valid_extraction_statuses = {"Completed", "Extracted", "Extracting..."}
             if tasks_in_folder and all(t.status in valid_extraction_statuses for t in tasks_in_folder):
-                # If everything is already Extracted, skip
                 if all(t.status == "Extracted" for t in tasks_in_folder):
                     self.extracted_folders.add(folder_name)
                     continue
