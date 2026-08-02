@@ -211,6 +211,14 @@ class SettingsDialog(QDialog):
         self.workers_spinbox.setValue(self.current_settings.get("max_workers", 3))
         layout.addRow("Max Concurrent Downloads:", self.workers_spinbox)
         
+        # Bandwidth Limit
+        self.bandwidth_spinbox = QSpinBox()
+        self.bandwidth_spinbox.setRange(0, 1000) # 0 means unlimited
+        self.bandwidth_spinbox.setSuffix(" MB/s")
+        self.bandwidth_spinbox.setSpecialValueText("Unlimited")
+        self.bandwidth_spinbox.setValue(self.current_settings.get("bandwidth_limit", 0))
+        layout.addRow("Global Bandwidth Limit:", self.bandwidth_spinbox)
+        
         # Extract Option
         self.extract_checkbox = QCheckBox()
         self.extract_checkbox.setChecked(self.current_settings.get("extract_after_download", False))
@@ -248,6 +256,7 @@ class SettingsDialog(QDialog):
             
             self.dir_input.setText(default_dir)
             self.workers_spinbox.setValue(3)
+            self.bandwidth_spinbox.setValue(0)
             self.extract_checkbox.setChecked(False)
             self.skip_delete_checkbox.setChecked(False)
             
@@ -259,6 +268,7 @@ class SettingsDialog(QDialog):
         return {
             "default_save_dir": self.dir_input.text(),
             "max_workers": self.workers_spinbox.value(),
+            "bandwidth_limit": self.bandwidth_spinbox.value(),
             "extract_after_download": self.extract_checkbox.isChecked(),
             "skip_delete_confirmation": self.skip_delete_checkbox.isChecked(),
             "column_widths": self.current_settings.get("column_widths", {}),
@@ -463,6 +473,10 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self.show_about_dialog)
         about_menu.addAction(about_action)
         
+        donate_action = QAction("&Donate", self)
+        donate_action.triggered.connect(self.open_donate_link)
+        about_menu.addAction(donate_action)
+        
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -662,6 +676,8 @@ class MainWindow(QMainWindow):
         menu.addAction("[P] Pause", self.pause_selected)
         menu.addAction("[C] Cancel", self.cancel_selected)
         menu.addSeparator()
+        menu.addAction("Extract Now", self.manual_extract_selected)
+        menu.addSeparator()
         menu.addAction("[R] Retry", self.retry_selected)
         menu.addAction("[F] Force Redownload", self.force_redownload_selected)
         menu.addAction("Copy Error Details", self.copy_selected_error_log)
@@ -787,6 +803,9 @@ class MainWindow(QMainWindow):
         
     def open_contact_link(self):
         QDesktopServices.openUrl(QUrl("https://github.com/billysams21/SilverSpoon/issues"))
+        
+    def open_donate_link(self):
+        QDesktopServices.openUrl(QUrl("https://ko-fi.com/billysm23"))
 
     def show_contributing_dialog(self):
         QMessageBox.information(self, "Contributing Guide",
@@ -1244,6 +1263,24 @@ class MainWindow(QMainWindow):
             return
 
         active_statuses = {"Downloading", "Pending", "Starting...", "Pausing...", "Extracting..."}
+        
+        # Check for files that have progress and are not purely errors
+        files_with_progress = []
+        for task in tasks_to_redownload:
+            if task.status not in active_statuses and task.progress > 0 and task.status != "Error":
+                files_with_progress.append(task)
+                
+        if files_with_progress:
+            reply = QMessageBox.warning(
+                self, 'Confirm Force Redownload',
+                f"You have selected {len(files_with_progress)} file(s) that already have download progress.\n\n"
+                f"Forcing a redownload will PERMANENTLY DELETE the partially downloaded file(s) and start from 0%.\n\n"
+                f"Are you sure you want to proceed?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
         redownloaded = 0
         skipped = 0
         failed = 0
@@ -1533,6 +1570,31 @@ class MainWindow(QMainWindow):
                 
             time.sleep(1)
             
+    def manual_extract_selected(self):
+        selected_tasks = self.get_selected_tasks()
+        if not selected_tasks:
+            QMessageBox.information(self, "No Selection", "Select one or more tasks to extract.")
+            return
+            
+        # Group tasks by folder name to extract batch-by-batch
+        folders = {}
+        for task in selected_tasks:
+            if task.folder_name not in folders:
+                folders[task.folder_name] = []
+            folders[task.folder_name].append(task)
+            
+        for folder_name, tasks_in_folder in folders.items():
+            if any(t.status == "Extracting..." for t in tasks_in_folder):
+                continue
+                
+            all_folder_tasks = [t for t in self.tasks if t.folder_name == folder_name]
+            
+            # Remove from extracted set so it can be extracted again if needed
+            self.extracted_folders.discard(folder_name)
+            self.extracted_folders.add(folder_name)
+            
+            threading.Thread(target=self.extract_folder, args=(all_folder_tasks,), daemon=True).start()
+
     def check_extraction(self):
         # Group tasks by folder
         folders = {}
@@ -1569,19 +1631,23 @@ class MainWindow(QMainWindow):
             files = os.listdir(save_dir)
             files.sort()
             
-            first_vol = None
+            vols_to_extract = []
             for f in files:
-                if re.search(r'\.part0*1\.rar$', f, re.IGNORECASE) or \
-                   re.search(r'\.001$', f) or \
-                   (f.lower().endswith('.rar') and not re.search(r'\.part\d+\.rar$', f, re.IGNORECASE)):
-                    first_vol = os.path.join(save_dir, f)
-                    break
+                # 1. Main multipart start (.part01.rar, .part1.rar)
+                if re.search(r'\.part0*1\.rar$', f, re.IGNORECASE):
+                    vols_to_extract.append(os.path.join(save_dir, f))
+                # 2. Sequential start (.001)
+                elif re.search(r'\.001$', f):
+                    vols_to_extract.append(os.path.join(save_dir, f))
+                # 3. Standalone .rar or .zip (not part of a sequence)
+                elif f.lower().endswith(('.rar', '.zip')) and not re.search(r'\.part\d+\.rar$', f, re.IGNORECASE):
+                    vols_to_extract.append(os.path.join(save_dir, f))
                     
-            if not first_vol and files:
+            if not vols_to_extract and files:
                 # Fallback to just the first file alphabetically
-                first_vol = os.path.join(save_dir, files[0])
+                vols_to_extract.append(os.path.join(save_dir, files[0]))
                 
-            if not first_vol:
+            if not vols_to_extract:
                 for t in tasks_in_folder:
                     t.status = "Extract Error (No File)"
                     t.error_message = f"No archive file was found in {save_dir}."
@@ -1590,7 +1656,8 @@ class MainWindow(QMainWindow):
                 return
                 
             # Locate an available extractor (platform-aware)
-            cmd = None
+            extractor_type = None
+            base_cmd = None
             if sys.platform == 'win32':
                 # Windows: prefer installed 7-Zip > WinRAR > bundled 7z.exe
                 if hasattr(sys, '_MEIPASS'):
@@ -1600,19 +1667,24 @@ class MainWindow(QMainWindow):
                 installed_7z = r"C:\Program Files\7-Zip\7z.exe"
                 installed_winrar = r"C:\Program Files\WinRAR\WinRAR.exe"
                 if os.path.exists(installed_7z):
-                    cmd = [installed_7z, 'x', first_vol, f'-o{save_dir}', '-y']
+                    extractor_type = '7z'
+                    base_cmd = installed_7z
                 elif os.path.exists(installed_winrar):
-                    cmd = [installed_winrar, 'x', '-y', first_vol, f'{save_dir}\\']
+                    extractor_type = 'winrar'
+                    base_cmd = installed_winrar
                 elif os.path.exists(bundled_7z):
-                    cmd = [bundled_7z, 'x', first_vol, f'-o{save_dir}', '-y']
+                    extractor_type = '7z'
+                    base_cmd = bundled_7z
             else:
                 import shutil
                 if shutil.which('7z'):
-                    cmd = ['7z', 'x', first_vol, f'-o{save_dir}', '-y']
+                    extractor_type = '7z'
+                    base_cmd = '7z'
                 elif shutil.which('unrar'):
-                    cmd = ['unrar', 'x', first_vol, f'{save_dir}/', '-y']
+                    extractor_type = 'unrar'
+                    base_cmd = 'unrar'
                 
-            if not cmd:
+            if not extractor_type:
                 for t in tasks_in_folder:
                     t.status = "Extract Error (No extractor found)"
                     t.error_message = "No supported extractor was found. Install 7-Zip or WinRAR, then retry extraction."
@@ -1620,16 +1692,24 @@ class MainWindow(QMainWindow):
                     self.extracted_folders.remove(folder_name)
                 return
                 
-            # Run extraction silently without spawning a console window (Windows only)
+            # Extract each base volume found
             creationflags = 0x08000000 if sys.platform == 'win32' else 0
-            subprocess.run(
-                cmd,
-                check=True,
-                creationflags=creationflags,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL
-            )
+            for vol in vols_to_extract:
+                if extractor_type == '7z':
+                    cmd = [base_cmd, 'x', vol, f'-o{save_dir}', '-y']
+                elif extractor_type == 'winrar':
+                    cmd = [base_cmd, 'x', '-y', vol, f'{save_dir}\\']
+                elif extractor_type == 'unrar':
+                    cmd = [base_cmd, 'x', vol, f'{save_dir}/', '-y']
+                    
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    creationflags=creationflags,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL
+                )
             
             for t in tasks_in_folder:
                 t.status = "Extracted"
@@ -1760,6 +1840,13 @@ class MainWindow(QMainWindow):
                 bytes_since_last = 0
                 
                 with open(task.filepath, mode) as f:
+                    limit_mb_s = self.settings.get("bandwidth_limit", 0)
+                    max_workers = self.settings.get("max_workers", 3)
+                    
+                    limit_bytes_s = 0
+                    if limit_mb_s > 0 and max_workers > 0:
+                        limit_bytes_s = (limit_mb_s * 1024 * 1024) / max_workers
+                    
                     for chunk in r.iter_content(chunk_size=8192*8):
                         if task.pause_flag:
                             task.status = "Paused"
@@ -1777,6 +1864,15 @@ class MainWindow(QMainWindow):
                             bytes_since_last += size
                             
                             now = time.time()
+                            
+                            # Simple Token Bucket / Sleep for Bandwidth Limiting
+                            if limit_bytes_s > 0:
+                                expected_time = bytes_since_last / limit_bytes_s
+                                actual_time = now - last_time
+                                if expected_time > actual_time:
+                                    time.sleep(expected_time - actual_time)
+                                    now = time.time()
+                            
                             if now - last_time > 0.5:
                                 task.speed = (bytes_since_last / (now - last_time)) / (1024*1024)
                                 if task.total_bytes > 0:
