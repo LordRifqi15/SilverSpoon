@@ -8,7 +8,7 @@ A Python-based bulk downloader designed to bypass Cloudflare protections on file
 
 * **Auto-Updater:** (Windows only) Automatically checks for, downloads, and applies new updates so you are always on the latest version without manual `.zip` downloads.
 * **Cross-Platform Extraction:** Built-in auto-extraction support for Windows (bundled `7z`), as well as Linux and macOS (via `/usr/bin/7z` / `p7zip`).
-* **Cloudflare Bypass:** Uses `cloudscraper` to mimic a real browser and bypass anti-bot challenges.
+* **Cloudflare Turnstile Bypass:** Uses a hidden Chromium browser (via `nodriver`) to auto-solve Cloudflare Turnstile challenges invisibly, then downloads via `curl_cffi` with TLS impersonation. No manual CAPTCHA solving needed for normal IPs.
 * **Persistent Download History:** Automatically saves your task queue, progress, and folder groupings across sessions. Close the app anytime without losing your place!
 * **Grouped Batch Folders:** Downloads are neatly organized into collapsible dropdown trees, showing aggregated progress, speed, and ETA for entire batches.
 * **Smart Folder Grouping & Batching:** Automatically suggests a unified folder name for a batch of links, perfectly grouping main game parts and messy optional files together.

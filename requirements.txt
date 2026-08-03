@@ -1,2 +1,3 @@
-cloudscraper>=1.2.71
+curl_cffi>=0.7
+nodriver>=0.1
 PyQt6>=6.11.0

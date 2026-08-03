@@ -7,8 +7,10 @@ import subprocess
 import json
 import logging
 import tempfile
+import contextlib
 import zipfile
 import shutil
+from collections import deque
 
 logging.basicConfig(
     filename=os.path.expanduser("~/.silverspoon.log"),
@@ -36,13 +38,12 @@ class ProgressBarDelegate(QStyledItemDelegate):
                 
                 if progress is not None and isinstance(progress, (int, float)):
                     if status == "Error" or status == "Contains Errors":
-                        bg_color = QColor(231, 76, 60, 50) # Light Red
+                        bg_color = QColor(231, 76, 60, 50)
                     elif status in ("Completed", "Extracted"):
-                        bg_color = QColor(46, 204, 113, 50) # Light Green
+                        bg_color = QColor(46, 204, 113, 50)
                     else:
-                        bg_color = QColor(52, 152, 219, 50) # Light Blue
-                    
-                    # Calculate progress width
+                        bg_color = QColor(52, 152, 219, 50)
+
                     rect = option.rect
                     progress_width = int(rect.width() * (progress / 100.0))
                     progress_rect = rect.adjusted(0, 0, progress_width - rect.width(), 0)
@@ -55,11 +56,12 @@ class ProgressBarDelegate(QStyledItemDelegate):
         
         super().paint(painter, option, index)
 
-import cloudscraper
+from curl_cffi import requests as curl_requests
+from cf_turnstile import TurnstileSolver
 from PyQt6.QtCore import QMetaObject, Q_ARG
 from update_logic import UpdateCheckerThread, UpdateDownloaderDialog
 
-CURRENT_VERSION = "v1.3.0"
+CURRENT_VERSION = "v1.4.0"
 GITHUB_REPO = "billysams21/SilverSpoon"
 OLD_EXE_CLEANUP_MARKER_SUFFIX = ".delete_old_on_start"
 
@@ -81,6 +83,8 @@ def load_settings():
         "default_save_dir": default_downloads,
         "max_workers": 3,
         "extract_after_download": False,
+        "auto_retry_errors": False,
+        "captcha_timeout": 10,
         "column_widths": {},
         "skip_delete_confirmation": False,
         "show_warning_dialog": True,
@@ -91,12 +95,10 @@ def load_settings():
         try:
             with open(settings_path, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
-                # Merge defaults with loaded to handle missing keys in older configs
                 default_settings.update(loaded)
         except Exception:
             pass
-            
-    # Explicitly save settings back so new defaults are written immediately
+
     save_settings(default_settings)
     
     return default_settings
@@ -219,10 +221,22 @@ class SettingsDialog(QDialog):
         self.bandwidth_spinbox.setValue(self.current_settings.get("bandwidth_limit", 0))
         layout.addRow("Global Bandwidth Limit:", self.bandwidth_spinbox)
         
+        # CAPTCHA Timeout
+        self.captcha_spinbox = QSpinBox()
+        self.captcha_spinbox.setRange(5, 120)
+        self.captcha_spinbox.setSuffix(" seconds")
+        self.captcha_spinbox.setValue(self.current_settings.get("captcha_timeout", 10))
+        layout.addRow("CAPTCHA Solve Timeout:", self.captcha_spinbox)
+        
         # Extract Option
         self.extract_checkbox = QCheckBox()
         self.extract_checkbox.setChecked(self.current_settings.get("extract_after_download", False))
         layout.addRow("Extract after download by default:", self.extract_checkbox)
+        
+        # Auto-retry Errors Option
+        self.auto_retry_checkbox = QCheckBox()
+        self.auto_retry_checkbox.setChecked(self.current_settings.get("auto_retry_errors", False))
+        layout.addRow("Automatically retry failed downloads (up to 3 times):", self.auto_retry_checkbox)
         
         # Skip Delete Confirmation Option
         self.skip_delete_checkbox = QCheckBox()
@@ -257,7 +271,9 @@ class SettingsDialog(QDialog):
             self.dir_input.setText(default_dir)
             self.workers_spinbox.setValue(3)
             self.bandwidth_spinbox.setValue(0)
+            self.captcha_spinbox.setValue(10)
             self.extract_checkbox.setChecked(False)
+            self.auto_retry_checkbox.setChecked(False)
             self.skip_delete_checkbox.setChecked(False)
             
             # Reset background invisible settings as well
@@ -269,7 +285,9 @@ class SettingsDialog(QDialog):
             "default_save_dir": self.dir_input.text(),
             "max_workers": self.workers_spinbox.value(),
             "bandwidth_limit": self.bandwidth_spinbox.value(),
+            "captcha_timeout": self.captcha_spinbox.value(),
             "extract_after_download": self.extract_checkbox.isChecked(),
+            "auto_retry_errors": self.auto_retry_checkbox.isChecked(),
             "skip_delete_confirmation": self.skip_delete_checkbox.isChecked(),
             "column_widths": self.current_settings.get("column_widths", {}),
             "show_warning_dialog": self.current_settings.get("show_warning_dialog", True),
@@ -303,6 +321,7 @@ class DownloadTask:
         self.downloaded_bytes = 0
         self.total_bytes = 0
         self.error_message = ""
+        self.retry_count = 0
         
         self.pause_flag = False
         self.cancel_flag = False
@@ -325,7 +344,7 @@ class DownloadTask:
     def from_dict(cls, data):
         task = cls(data["link"], data["base_save_dir"], data["folder_name"])
         # Ensure it doesn't auto-start if it was active when closed
-        if data["status"] in ("Downloading", "Pending", "Starting...", "Resolving Container..."):
+        if data["status"] in ("Downloading", "Pending", "Starting...", "Resolving Container...", "Pausing...", "Solving CAPTCHA..."):
             task.status = "Paused"
             task.pause_flag = True
         else:
@@ -367,7 +386,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("SilverSpoon - UI (PyQt6)")
         self.resize(1000, 650)
         
-        # Determine paths to assets (works both locally and within a PyInstaller bundled .exe)
         if hasattr(sys, '_MEIPASS'):
             self.base_dir = sys._MEIPASS
         else:
@@ -381,51 +399,44 @@ class MainWindow(QMainWindow):
         
         self.tasks = []
         self.max_workers = self.settings.get("max_workers", 3)
-        self.scraper = cloudscraper.create_scraper(browser='chrome')
+        captcha_timeout = self.settings.get("captcha_timeout", 10)
+        self.turnstile_solver = TurnstileSolver(timeout=captcha_timeout)
+        self.dl_session = curl_requests.Session(impersonate="chrome")
         self.is_all_selected = False
         self.extracted_folders = set()
         
         self.setup_ui()
         self.load_tasks_from_history()
         
-        # Show warning dialog if not disabled
         if self.settings.get("show_warning_dialog", True):
             QTimer.singleShot(100, self.show_warning_dialog)
-            
-        # Start Update Checker
+
         if sys.platform == "win32" and hasattr(sys, 'frozen'):
             self.update_checker = UpdateCheckerThread(CURRENT_VERSION, GITHUB_REPO, get_settings_path())
             self.update_checker.update_available.connect(self.prompt_update)
             self.update_checker.check_finished.connect(self.update_last_check_time)
             self.update_checker.start()
-            
-        # Start Background Download Manager
+
         self.manager_thread = threading.Thread(target=self.download_manager, daemon=True)
         self.manager_thread.start()
-        
-        # UI Updater Timer
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_ui)
-        self.timer.start(500) # update every 500ms
+        self.timer.start(500)
 
     def closeEvent(self, event):
-        # Save tasks history before closing
         save_history(self.tasks)
-        
-        # Save column widths
         col_widths = {}
         for i in range(self.tree.columnCount()):
             col_widths[str(i)] = self.tree.columnWidth(i)
         self.settings["column_widths"] = col_widths
         save_settings(self.settings)
-        
+        self.turnstile_solver.stop()
         event.accept()
 
     def setup_ui(self):
-        # Menu Bar Setup
         menu_bar = self.menuBar()
-        
-        # File Menu
+
         file_menu = menu_bar.addMenu("&File")
         
         import_action = QAction("&Import Links from File...", self)
@@ -437,12 +448,11 @@ class MainWindow(QMainWindow):
         file_menu.addAction(settings_action)
         
         file_menu.addSeparator()
-        
+
         exit_action = QAction("&Exit", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
-        
-        # Help Menu
+
         help_menu = menu_bar.addMenu("&Help")
         
         github_action = QAction("&GitHub Repository", self)
@@ -480,8 +490,7 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        
-        # 1. Directory Section
+
         dir_layout = QHBoxLayout()
         dir_layout.addWidget(QLabel("Base Save Directory:"))
         default_dir = self.settings.get("default_save_dir", os.path.join(os.path.expanduser("~"), "Downloads"))
@@ -491,8 +500,7 @@ class MainWindow(QMainWindow):
         browse_btn.clicked.connect(self.browse_dir)
         dir_layout.addWidget(browse_btn)
         main_layout.addLayout(dir_layout)
-        
-        # 2. Links & Global Stats Section
+
         stats_layout = QHBoxLayout()
         stats_layout.addWidget(QLabel("Paste Links Here (one per line):"))
         
@@ -507,7 +515,7 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(stats_layout)
         
         self.text_links = QTextEdit()
-        self.text_links.setAcceptRichText(False) # Prevents styling from being retained
+        self.text_links.setAcceptRichText(False)
         self.text_links.setMaximumHeight(80)
         main_layout.addWidget(self.text_links)
         
@@ -515,13 +523,11 @@ class MainWindow(QMainWindow):
         add_btn.setStyleSheet("background-color: #2e55cc; color: white; font-weight: bold; padding: 6px;")
         add_btn.clicked.connect(self.add_links)
         main_layout.addWidget(add_btn)
-        
-        # 3. Table/Tree Section
+
         self.tree = QTreeWidget()
         self.tree.setColumnCount(7)
         self.tree.setHeaderLabels(["Filename / Folder", "Sel", "Status", "Progress", "Speed", "ETA", "Size"])
-        
-        # Enable custom item delegates for drawing the progress bar background
+
         self.tree.setItemDelegate(ProgressBarDelegate(self.tree))
         
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
@@ -533,7 +539,6 @@ class MainWindow(QMainWindow):
         self.tree.header().setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
         self.tree.header().setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
         
-        # Load saved column widths if available
         saved_widths = self.settings.get("column_widths", {})
         if saved_widths:
             for i in range(self.tree.columnCount()):
@@ -541,15 +546,13 @@ class MainWindow(QMainWindow):
                 if width:
                     self.tree.setColumnWidth(i, width)
         else:
-            # Default widths
             self.tree.setColumnWidth(0, 300)
             self.tree.setColumnWidth(2, 100)
             self.tree.setColumnWidth(3, 80)
             self.tree.setColumnWidth(4, 80)
             self.tree.setColumnWidth(5, 80)
             self.tree.setColumnWidth(6, 120)
-        
-        # Move the 'Sel' (checkbox) column visually to the far left
+
         self.tree.header().moveSection(1, 0)
         
         self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -563,14 +566,12 @@ class MainWindow(QMainWindow):
         
         self.tree.itemClicked.connect(self.handle_item_clicked)
         self.tree.itemSelectionChanged.connect(self.handle_item_selection_changed)
-        # Apply a stylesheet to ensure checkboxes are centered in their new logical column
         self.tree.setStyleSheet("""
             QTreeView::indicator { width: 16px; height: 16px; }
             QTreeView::item:selected { outline: none; }
         """)
         main_layout.addWidget(self.tree)
-        
-        # 4. Action Section
+
         action_layout = QHBoxLayout()
         
         self.select_all_btn = QPushButton("Select All")
@@ -647,7 +648,6 @@ class MainWindow(QMainWindow):
                 self.pause_selected()
                 return True
             if event.key() == Qt.Key.Key_Space:
-                # Toggle based on the first selected task's status
                 selected = self.get_selected_tasks()
                 if selected:
                     if selected[0].status in ("Downloading", "Starting..."):
@@ -677,6 +677,7 @@ class MainWindow(QMainWindow):
         menu.addAction("[C] Cancel", self.cancel_selected)
         menu.addSeparator()
         menu.addAction("Extract Now", self.manual_extract_selected)
+        menu.addAction("Open Folder", self.open_selected_folder)
         menu.addSeparator()
         menu.addAction("[R] Retry", self.retry_selected)
         menu.addAction("[F] Force Redownload", self.force_redownload_selected)
@@ -686,13 +687,11 @@ class MainWindow(QMainWindow):
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
     def get_or_create_batch_item(self, folder_name):
-        # Search for existing top-level item with this folder name
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
             if item.text(0) == folder_name:
                 return item
-                
-        # Create a new top-level item for this batch
+
         batch_item = QTreeWidgetItem(self.tree)
         batch_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         batch_item.setText(0, folder_name)
@@ -700,19 +699,34 @@ class MainWindow(QMainWindow):
         batch_item.setExpanded(True)
         return batch_item
 
+    def open_selected_folder(self):
+        tasks = self.get_selected_tasks()
+        if not tasks:
+            return
+            
+        # Open the folder of the first selected task
+        folder_path = tasks[0].save_dir
+        if not os.path.exists(folder_path):
+            QMessageBox.information(self, "Folder Not Found", f"The folder does not exist yet:\n{folder_path}")
+            return
+            
+        try:
+            if sys.platform == 'win32':
+                os.startfile(folder_path)
+            elif sys.platform == 'darwin':
+                import subprocess
+                subprocess.Popen(['open', folder_path])
+            else:
+                import subprocess
+                subprocess.Popen(['xdg-open', folder_path])
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not open folder:\n{e}")
+
     def trigger_history_save(self):
-        """Saves history in a non-blocking way to avoid UI stutter."""
-        # Only save history if we aren't already saving it (basic debounce)
         if not hasattr(self, '_history_save_timer'):
             self._history_save_timer = QTimer()
             self._history_save_timer.setSingleShot(True)
             self._history_save_timer.timeout.connect(lambda: save_history(self.tasks))
-        
-        # Debounce to 500ms using PyQt6's safe signal-slot mechanism for threading
-        # Ensure thread safety by wrapping in QMetaObject.invokeMethod if not in main thread
-        import inspect
-        from PyQt6.QtCore import QMetaObject, Q_ARG
-        
         QMetaObject.invokeMethod(self._history_save_timer, "start", Qt.ConnectionType.QueuedConnection, Q_ARG(int, 500))
 
     def add_task_to_ui(self, task):
@@ -722,8 +736,7 @@ class MainWindow(QMainWindow):
         child_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         
         child_item.setText(0, task.filename)
-        
-        # Determine initial check state
+
         check_state = Qt.CheckState.Checked if task.is_selected else Qt.CheckState.Unchecked
         child_item.setCheckState(1, check_state)
         
@@ -775,11 +788,8 @@ class MainWindow(QMainWindow):
         loaded_tasks = load_history()
         for task in loaded_tasks:
             self.add_task_to_ui(task)
-            
-            # Immediately mark previously extracted batches as handled so they aren't re-extracted
             if task.status == "Extracted":
                 self.extracted_folders.add(task.folder_name)
-            # If the app was closed while extracting, reset it to Completed so it can retry properly if needed
             elif task.status == "Extracting...":
                 task.status = "Completed"
 
@@ -789,7 +799,6 @@ class MainWindow(QMainWindow):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                    # Append to existing text or set it if empty
                     current_text = self.text_links.toPlainText()
                     if current_text.strip():
                         self.text_links.setText(current_text + "\n" + content)
@@ -821,10 +830,20 @@ class MainWindow(QMainWindow):
 
     def show_about_dialog(self):
         QMessageBox.about(self, "About SilverSpoon",
-            "<h3>SilverSpoon v1.3.0</h3>"
+            "<h3>SilverSpoon v1.4.0</h3>"
             "<p>A simple, fast bulk downloader for FuckingFast links developed by billysams21.</p>"
             "<p>Select your links, paste them in, and hit Add!</p>"
             "<p>Licensed under the GNU GPLv3.</p>"
+            "<hr>"
+            "<h4>Changelog (v1.4.0 - Short):</h4>"
+            "<ul>"
+            "<li><b>New:</b> Bandwidth limiter in Settings to cap global download speed.</li>"
+            "<li><b>New:</b> Built-in Cloudflare Turnstile CAPTCHA solver using a hidden Chromium browser.</li>"
+            "<li><b>New:</b> Visual progress bars drawn directly behind file/folder names.</li>"
+            "<li><b>New:</b> Manual \"Extract Now\" context menu action for downloaded batches.</li>"
+            "<li><b>Fix:</b> Stabilized download speed calculation with a 3-second rolling average.</li>"
+            "<li><b>Fix:</b> More accurate ETA calculation and smarter folder name adjustment.</li>"
+            "</ul>"
             "<hr>"
             "<h4>Changelog (v1.3.0 - Short):</h4>"
             "<ul>"
@@ -853,7 +872,6 @@ class MainWindow(QMainWindow):
 
     def show_warning_dialog_manual(self):
         dialog = WarningDialog(self.settings, self)
-        # Uncheck "Don't show again" visually if they opened it manually
         dialog.dont_show_checkbox.setChecked(not self.settings.get("show_warning_dialog", True))
         dialog.exec()
         save_settings(self.settings)
@@ -872,7 +890,6 @@ class MainWindow(QMainWindow):
         self.settings = load_settings()
         
     def prompt_update(self, version, changelog, download_url):
-        # First verify write permission in the current directory
         current_exe_dir = os.path.dirname(sys.executable)
         test_file = os.path.join(current_exe_dir, ".update_test_permission")
         try:
@@ -955,20 +972,16 @@ class MainWindow(QMainWindow):
                         
                     return
                 
-                # Option 2: The Rename Trick
                 old_exe_path = current_exe + ".old"
-                
-                # If an old leftover exists from a previous update, try to remove it
+
                 if os.path.exists(old_exe_path):
                     try:
                         os.remove(old_exe_path)
                     except Exception:
                         pass
                 
-                # Rename current running executable
                 os.rename(current_exe, old_exe_path)
-                
-                # Copy the newly downloaded executable into place (avoids WinError 32 if Temp file is locked by AV)
+
                 copy_success = False
                 for _ in range(10):
                     try:
@@ -979,11 +992,9 @@ class MainWindow(QMainWindow):
                         time.sleep(0.5)
                         
                 if not copy_success:
-                    # Rollback the rename if we couldn't copy the new file in
                     os.rename(old_exe_path, current_exe)
                     raise Exception("Could not copy the new executable. It might be locked by your Antivirus.")
-                
-                # Cleanup the extracted temp dir and zip file
+
                 try:
                     shutil.rmtree(extract_dir, ignore_errors=True)
                     if os.path.exists(zip_path):
@@ -1012,26 +1023,13 @@ class MainWindow(QMainWindow):
                 elif os.path.exists(cleanup_marker):
                     os.remove(cleanup_marker)
 
-                # Save state before we exit
                 save_history(self.tasks)
                 save_settings(self.settings)
-                
-                # Write a .bat trampoline that:
-                # 1. Tells PyInstaller that this is a fresh application instance.
-                # 2. Waits for the old process to fully exit.
-                # 3. Waits for the replacement executable to exit normally.
-                # 4. Deletes the approved backup, then removes itself.
-                #
-                # PyInstaller 6 treats a process launched from a frozen app as a
-                # worker by default. A worker reuses the parent's _MEI directory,
-                # which is deleted as this process exits and makes the replacement
-                # fail to load python313.dll. PYINSTALLER_RESET_ENVIRONMENT is the
-                # supported way to force a new one-file extraction directory.
+
                 bat_path = os.path.join(tempfile.gettempdir(), f"silverspoon_restart_{int(time.time())}.bat")
                 with open(bat_path, 'w') as bat:
                     bat.write('@echo off\n')
                     bat.write('set PYINSTALLER_RESET_ENVIRONMENT=1\n')
-                    # Kept for compatibility with builds made by older PyInstaller.
                     bat.write('set _MEIPASS=\n')
                     bat.write('set _MEIPASS2=\n')
                     bat.write('ping 127.0.0.1 -n 4 > nul\n')
@@ -1058,12 +1056,11 @@ class MainWindow(QMainWindow):
     def open_settings_dialog(self):
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
-            # User clicked Save
             self.settings = dialog.get_updated_settings()
             save_settings(self.settings)
-            
-            # Apply immediate UI/State updates
             self.max_workers = self.settings.get("max_workers", 3)
+            new_timeout = self.settings.get("captcha_timeout", 10)
+            self.turnstile_solver.TOKEN_TIMEOUT = new_timeout
             default_dir = self.settings.get("default_save_dir", os.path.join(os.path.expanduser("~"), "Downloads"))
             self.dir_input.setText(default_dir)
             self.extract_checkbox.setChecked(self.settings.get("extract_after_download", False))
@@ -1077,7 +1074,6 @@ class MainWindow(QMainWindow):
         clipboard = QApplication.clipboard()
         text = clipboard.text()
         if text:
-            # Append if there is text, else just set it
             current_text = self.text_links.toPlainText()
             if current_text.strip():
                 self.text_links.setText(current_text + "\n" + text)
@@ -1106,8 +1102,7 @@ class MainWindow(QMainWindow):
             suggested_folder = first_filename.rsplit('.', 1)[0]
             
         suggested_folder = suggested_folder.replace('_--_fitgirl-repacks.site', '')
-            
-        # Prompt user for batch folder name
+
         folder_name, ok = QInputDialog.getText(
             self, 
             "Batch Folder Name", 
@@ -1117,7 +1112,7 @@ class MainWindow(QMainWindow):
         )
         
         if not ok or not folder_name.strip():
-            return # User cancelled
+            return
             
         folder_name = folder_name.strip()
         
@@ -1128,10 +1123,9 @@ class MainWindow(QMainWindow):
         self.text_links.clear()
 
     def toggle_select_all(self):
-        # Check if all items are currently checked
         all_checked = True
         total_items = 0
-        
+
         for i in range(self.tree.topLevelItemCount()):
             batch_item = self.tree.topLevelItem(i)
             if batch_item.checkState(1) != Qt.CheckState.Checked:
@@ -1144,11 +1138,9 @@ class MainWindow(QMainWindow):
         if total_items == 0:
             return
             
-        # If everything is already checked, toggle to uncheck all. Otherwise check all.
         self.is_all_selected = not all_checked
         state = Qt.CheckState.Checked if self.is_all_selected else Qt.CheckState.Unchecked
-        
-        # Iterate over all top level items and their children
+
         for i in range(self.tree.topLevelItemCount()):
             batch_item = self.tree.topLevelItem(i)
             batch_item.setCheckState(1, state)
@@ -1160,39 +1152,31 @@ class MainWindow(QMainWindow):
             task.is_selected = self.is_all_selected
 
     def handle_item_clicked(self, item, col):
-        if col == 1: # Column 1 is now the Checkbox column
+        if col == 1:
             state = item.checkState(1)
-            
-            # If it's a batch (top-level) item, apply to all children
+
             if item.parent() is None:
                 for i in range(item.childCount()):
                     child = item.child(i)
                     child.setCheckState(1, state)
-                    # Update underlying tasks
                     task = next((t for t in self.tasks if t.tree_item == child), None)
                     if task:
                         task.is_selected = (state == Qt.CheckState.Checked)
             else:
-                # It's a child item, update its specific task
                 task = next((t for t in self.tasks if t.tree_item == item), None)
                 if task:
                     task.is_selected = (state == Qt.CheckState.Checked)
                     
     def handle_item_selection_changed(self):
-        # Synchronize checkbox state with the row's selection state
         for i in range(self.tree.topLevelItemCount()):
             top_item = self.tree.topLevelItem(i)
-            # Sync top-level item
             if top_item.isSelected():
                 top_item.setCheckState(1, Qt.CheckState.Checked)
             else:
                 top_item.setCheckState(1, Qt.CheckState.Unchecked)
-                
-            # Sync child items
+
             for j in range(top_item.childCount()):
                 child = top_item.child(j)
-                
-                # If parent is selected, force children to be checked too
                 if top_item.isSelected() or child.isSelected():
                     child.setCheckState(1, Qt.CheckState.Checked)
                     task = next((t for t in self.tasks if t.tree_item == child), None)
@@ -1205,16 +1189,13 @@ class MainWindow(QMainWindow):
                         task.is_selected = False
 
     def get_selected_tasks(self):
-        # First check explicitly checked boxes
         checked = [t for t in self.tasks if t.tree_item and t.tree_item.checkState(1) == Qt.CheckState.Checked]
         if checked:
             return checked
-            
-        # If nothing is explicitly checked via checkboxes, fallback to highlighted/selected tree rows
+
         selected_items = self.tree.selectedItems()
         selected_tasks = []
         for item in selected_items:
-            # If a batch parent is highlighted, get all its child tasks
             if item.parent() is None:
                 for i in range(item.childCount()):
                     child = item.child(i)
@@ -1229,7 +1210,7 @@ class MainWindow(QMainWindow):
 
     def start_downloads(self):
         for task in self.get_selected_tasks():
-            if task.status in ("Queued", "Cancelled", "Error", "Paused"):
+            if task.status in ("Queued", "Cancelled", "Error", "Paused", "Pausing...", "CAPTCHA Timeout", "Solving CAPTCHA..."):
                 task.status = "Pending"
                 task.error_message = ""
                 task.cancel_flag = False
@@ -1250,11 +1231,12 @@ class MainWindow(QMainWindow):
 
     def retry_selected(self):
         for task in self.get_selected_tasks():
-            if "Error" in task.status:
+            if "Error" in task.status or task.status == "CAPTCHA Timeout":
                 task.status = "Pending"
                 task.error_message = ""
                 task.cancel_flag = False
                 task.pause_flag = False
+                task.retry_count = 0
 
     def force_redownload_selected(self):
         tasks_to_redownload = self.get_selected_tasks()
@@ -1263,8 +1245,7 @@ class MainWindow(QMainWindow):
             return
 
         active_statuses = {"Downloading", "Pending", "Starting...", "Pausing...", "Extracting..."}
-        
-        # Check for files that have progress and are not purely errors
+
         files_with_progress = []
         for task in tasks_to_redownload:
             if task.status not in active_statuses and task.progress > 0 and task.status != "Error":
@@ -1357,14 +1338,14 @@ class MainWindow(QMainWindow):
             # 1. Cancel the task if it's active
             task.cancel_flag = True
             task.status = "Cancelled"
-            
+
             # 2. Delete the physical file if requested
             if delete_files and os.path.exists(task.filepath):
                 try:
                     os.remove(task.filepath)
                 except Exception as e:
                     print(f"Failed to delete {task.filepath}: {e}")
-                    
+
             # 3. Remove from UI tree
             if task.tree_item:
                 parent = task.tree_item.parent()
@@ -1554,7 +1535,13 @@ class MainWindow(QMainWindow):
             
     def download_manager(self):
         while True:
-            active = sum(1 for t in self.tasks if t.status in ("Downloading", "Starting..."))
+            # CAPTCHA resolution belongs to the same worker slot as the actual
+            # transfer. Otherwise each resolving task stops counting as active
+            # and the manager can exceed the configured concurrency limit.
+            active = sum(
+                1 for t in self.tasks
+                if t.status in ("Downloading", "Starting...", "Solving CAPTCHA...")
+            )
             if active < self.max_workers:
                 for task in self.tasks:
                     if task.status == "Pending":
@@ -1735,33 +1722,26 @@ class MainWindow(QMainWindow):
 
     def get_direct_link(self, task):
         try:
-            res = self.scraper.get(task.link)
-            if res.status_code != 200:
-                task.error_message = f"Could not open the file page. Server returned HTTP {res.status_code}."
-                if res.status_code in (403, 503):
-                    logging.error(f"Got {res.status_code} for {task.link}. Response body preview: {res.text[:500]}")
-                return None
-            
-            post_url = f"https://fuckingfast.co/f/{task.file_id}/go"
-            headers = {
-                'HX-Request': 'true',
-                'HX-Target': '',
-                'HX-Current-URL': task.link,
-                'Referer': task.link
-            }
-            res2 = self.scraper.post(post_url, headers=headers)
-            if res2.status_code == 200:
-                direct_link = res2.headers.get('Hx-Redirect')
-                if direct_link:
-                    return direct_link
-                task.error_message = "The file host did not return a direct download link. The link may be expired or unavailable."
-            else:
-                task.error_message = f"Could not request the direct download link. Server returned HTTP {res2.status_code}."
+            task.status = "Solving CAPTCHA..."
+            result = self.turnstile_solver.get_direct_link(task.link)
+            direct_link = result.get("direct_url")
+            if direct_link:
+                # Stash cookies/UA on the task for the download transport
+                task._dl_cookies = result.get("cookies", {})
+                task._dl_user_agent = result.get("user_agent", "")
+                return direct_link
+            task.status = "CAPTCHA Timeout"
+            task.error_message = "The file host did not return a direct download link. The link may be expired or unavailable."
         except Exception as e:
             logging.error(f"Error getting direct link for {task.link}: {e}", exc_info=True)
+            if "after " in str(e) and " seconds" in str(e):
+                task.status = "CAPTCHA Timeout"
+            else:
+                task.status = "Error"
             task.error_message = f"Could not get the direct download link. {format_error_message(e)}"
             return None
         if not task.error_message:
+            task.status = "Error"
             task.error_message = "Could not get the direct download link. The link may be expired or blocked."
         return None
 
@@ -1769,9 +1749,16 @@ class MainWindow(QMainWindow):
         dl_url = self.get_direct_link(task)
         if not dl_url:
             if not task.cancel_flag and not task.pause_flag:
-                task.status = "Error"
-                if not task.error_message:
-                    task.error_message = "Could not get the direct download link."
+                if self.settings.get("auto_retry_errors", False) and task.retry_count < 3:
+                    task.retry_count += 1
+                    task.status = "Pending"
+                    task.error_message = ""
+                    logging.info(f"Auto-retrying {task.filename} (attempt {task.retry_count}/3) after missing direct link")
+                else:
+                    if task.status != "CAPTCHA Timeout":
+                        task.status = "Error"
+                    if not task.error_message:
+                        task.error_message = "Could not get the direct download link."
             return
             
         if task.cancel_flag:
@@ -1790,8 +1777,14 @@ class MainWindow(QMainWindow):
                 try:
                     os.makedirs(task.save_dir, exist_ok=True)
                 except Exception as e:
-                    task.status = "Error"
-                    task.error_message = f"Failed to create save directory '{task.save_dir}'. {format_error_message(e)}"
+                    if self.settings.get("auto_retry_errors", False) and task.retry_count < 3:
+                        task.retry_count += 1
+                        task.status = "Pending"
+                        task.error_message = ""
+                        logging.info(f"Auto-retrying {task.filename} (attempt {task.retry_count}/3) after directory error")
+                    else:
+                        task.status = "Error"
+                        task.error_message = f"Failed to create save directory '{task.save_dir}'. {format_error_message(e)}"
                     self.trigger_history_save()
                     return
                 
@@ -1799,8 +1792,19 @@ class MainWindow(QMainWindow):
             if os.path.exists(task.filepath):
                 initial_size = os.path.getsize(task.filepath)
                 
-            head_req = self.scraper.head(dl_url)
-            total_size = int(head_req.headers.get('content-length', 0))
+            headers = {}
+            if getattr(task, '_dl_user_agent', None):
+                headers['User-Agent'] = task._dl_user_agent
+                
+            head_req = self.dl_session.head(dl_url, cookies=getattr(task, '_dl_cookies', {}), headers=headers, allow_redirects=True)
+            # Some hosts reject HEAD while accepting the actual ranged GET. Only
+            # trust Content-Length when the HEAD request itself succeeded.
+            total_size = 0
+            if 200 <= head_req.status_code < 300:
+                try:
+                    total_size = int(head_req.headers.get('content-length', 0))
+                except (TypeError, ValueError):
+                    total_size = 0
             task.total_bytes = total_size
             
             if initial_size > 0 and initial_size == total_size:
@@ -1810,34 +1814,63 @@ class MainWindow(QMainWindow):
                 task.error_message = ""
                 return
                 
-            resume_header = {}
+            resume_header = headers.copy()
             mode = 'wb'
             if initial_size > 0:
-                resume_header = {'Range': f'bytes={initial_size}-'}
+                resume_header['Range'] = f'bytes={initial_size}-'
                 mode = 'ab'
                 
-            with self.scraper.get(dl_url, stream=True, headers=resume_header) as r:
+            with contextlib.closing(self.dl_session.get(dl_url, stream=True, headers=resume_header, cookies=getattr(task, '_dl_cookies', {}))) as r:
+                if r.status_code == 416 and initial_size > 0:
+                    content_range = r.headers.get('content-range', '')
+                    match = re.search(r'/([0-9]+)$', content_range)
+                    if match and initial_size == int(match.group(1)):
+                        task.total_bytes = initial_size
+                        task.downloaded_bytes = initial_size
+                        task.progress = 100
+                        task.speed = 0
+                        task.status = "Completed"
+                        task.error_message = ""
+                        self.trigger_history_save()
+                        return
                 if r.status_code not in (200, 206):
-                    task.status = "Error"
-                    task.error_message = f"Download request failed. Server returned HTTP {r.status_code}."
                     if r.status_code in (403, 503):
                         preview = r.text[:500] if hasattr(r, 'text') else "No text body"
                         logging.error(f"Download 403/503 for {dl_url}. Body preview: {preview}")
+                    
+                    if self.settings.get("auto_retry_errors", False) and task.retry_count < 3:
+                        task.retry_count += 1
+                        task.status = "Pending"
+                        task.error_message = ""
+                        logging.info(f"Auto-retrying {task.filename} (attempt {task.retry_count}/3) after HTTP {r.status_code}")
+                    else:
+                        task.status = "Error"
+                        task.error_message = f"Download request failed. Server returned HTTP {r.status_code}."
                     return
                     
                 if r.status_code == 200 and initial_size > 0:
+                    # server ignores range header, restart from beginning
                     mode = 'wb'
                     initial_size = 0
                     
                 task.downloaded_bytes = initial_size
-                if total_size == 0 and 'content-length' in r.headers:
-                    task.total_bytes = int(r.headers['content-length']) + initial_size
-                elif total_size == 0:
-                    task.total_bytes = 0
+                if total_size == 0:
+                    content_range = r.headers.get('content-range', '')
+                    match = re.search(r'/([0-9]+)$', content_range)
+                    if match:
+                        task.total_bytes = int(match.group(1))
+                    else:
+                        try:
+                            task.total_bytes = int(r.headers.get('content-length', 0)) + initial_size
+                        except (TypeError, ValueError):
+                            task.total_bytes = 0
                     
                 start_time = time.time()
                 last_time = start_time
                 bytes_since_last = 0
+                # Keep a short history instead of reporting only the latest
+                # half-second burst of socket data.
+                speed_samples = deque([(start_time, task.downloaded_bytes)])
                 
                 with open(task.filepath, mode) as f:
                     limit_mb_s = self.settings.get("bandwidth_limit", 0)
@@ -1873,10 +1906,19 @@ class MainWindow(QMainWindow):
                                     time.sleep(expected_time - actual_time)
                                     now = time.time()
                             
+                            speed_samples.append((now, task.downloaded_bytes))
+                            while len(speed_samples) > 1 and now - speed_samples[0][0] > 3:
+                                speed_samples.popleft()
+                            window_start, window_bytes = speed_samples[0]
+                            window_duration = now - window_start
+                            if window_duration > 0:
+                                task.speed = (
+                                    (task.downloaded_bytes - window_bytes) / window_duration
+                                ) / (1024 * 1024)
+                            if task.total_bytes > 0:
+                                task.progress = (task.downloaded_bytes / task.total_bytes) * 100
+
                             if now - last_time > 0.5:
-                                task.speed = (bytes_since_last / (now - last_time)) / (1024*1024)
-                                if task.total_bytes > 0:
-                                    task.progress = (task.downloaded_bytes / task.total_bytes) * 100
                                 last_time = now
                                 bytes_since_last = 0
                 
@@ -1889,8 +1931,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logging.error(f"Download worker error for task {task.link}: {e}", exc_info=True)
             if not task.cancel_flag and not task.pause_flag:
-                task.status = "Error"
-                task.error_message = f"Download failed. {format_error_message(e)}"
+                if self.settings.get("auto_retry_errors", False) and task.retry_count < 3:
+                    task.retry_count += 1
+                    task.status = "Pending"
+                    task.error_message = ""
+                    logging.info(f"Auto-retrying {task.filename} (attempt {task.retry_count}/3)")
+                else:
+                    task.status = "Error"
+                    task.error_message = f"Download failed. {format_error_message(e)}"
                 self.trigger_history_save()
 
 if __name__ == "__main__":

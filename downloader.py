@@ -1,17 +1,22 @@
-import cloudscraper
 import concurrent.futures
+import contextlib
 import queue
 import threading
 import time
 import sys
 import os
+import re
+
+from curl_cffi import requests as curl_requests
+from cf_turnstile import TurnstileSolver
 
 class DownloadManager:
     def __init__(self, links_file, max_workers=3, chunk_size=8*1024*1024):
         self.links_file = links_file
         self.max_workers = max_workers
         self.chunk_size = chunk_size
-        self.scraper = cloudscraper.create_scraper(browser='chrome')
+        self.solver = TurnstileSolver()
+        self.dl_session = curl_requests.Session(impersonate="chrome")
         self.total_links = 0
         self.completed_links = 0
         self.failed_links = []
@@ -23,35 +28,18 @@ class DownloadManager:
         self.total_links = len(self.links)
 
     def extract_direct_url(self, link):
-        file_id = link.split('/')[-1].split('#')[0]
         try:
-            res = self.scraper.get(link)
-            if res.status_code != 200:
-                return None
-                
-            post_url = f"https://fuckingfast.co/f/{file_id}/go"
-            headers = {
-                'HX-Request': 'true',
-                'HX-Target': '',
-                'HX-Current-URL': link,
-                'Referer': link
-            }
-            
-            res2 = self.scraper.post(post_url, headers=headers)
-            if res2.status_code != 200:
-                return None
-                
-            dl_url = res2.headers.get('Hx-Redirect')
-            return dl_url
+            result = self.solver.get_direct_link(link)
+            return result.get("direct_url"), result.get("cookies", {}), result.get("user_agent", "")
         except Exception as e:
-            # print(f"Error extracting {file_id}: {e}")
-            return None
+            print(f"[!] Error extracting direct URL: {e}")
+            return None, {}, ""
 
     def download_file(self, link):
         filename = link.split('#')[-1] if '#' in link else link.split('/')[-1]
         file_id = link.split('/')[-1].split('#')[0]
         
-        dl_url = self.extract_direct_url(link)
+        dl_url, cookies, user_agent = self.extract_direct_url(link)
         if not dl_url:
             with self.lock:
                 print(f"[!] Failed to get direct URL for {filename}")
@@ -60,16 +48,22 @@ class DownloadManager:
 
         try:
             # check if file exists and get its size
-            resume_header = {}
-            mode = 'wb'
             initial_size = 0
             
             if os.path.exists(filename):
                 initial_size = os.path.getsize(filename)
                 
             # fetch headers to see total size and if it supports range
-            head_req = self.scraper.head(dl_url)
-            total_size = int(head_req.headers.get('content-length', 0))
+            headers = {}
+            if user_agent:
+                headers['User-Agent'] = user_agent
+            head_req = self.dl_session.head(dl_url, cookies=cookies, headers=headers, allow_redirects=True)
+            total_size = 0
+            if 200 <= head_req.status_code < 300:
+                try:
+                    total_size = int(head_req.headers.get('content-length', 0))
+                except (TypeError, ValueError):
+                    total_size = 0
             
             if initial_size > 0 and initial_size == total_size:
                 with self.lock:
@@ -77,11 +71,21 @@ class DownloadManager:
                     self.completed_links += 1
                 return True
                 
+            resume_header = headers.copy()
+            mode = 'wb'
             if initial_size > 0:
-                resume_header = {'Range': f'bytes={initial_size}-'}
+                resume_header['Range'] = f'bytes={initial_size}-'
                 mode = 'ab'
 
-            with self.scraper.get(dl_url, stream=True, headers=resume_header) as r:
+            with contextlib.closing(self.dl_session.get(dl_url, stream=True, headers=resume_header, cookies=cookies)) as r:
+                if r.status_code == 416 and initial_size > 0:
+                    content_range = r.headers.get('content-range', '')
+                    total_match = re.search(r'/([0-9]+)$', content_range)
+                    if total_match and initial_size == int(total_match.group(1)):
+                        with self.lock:
+                            print(f"[*] {filename} already fully downloaded.")
+                            self.completed_links += 1
+                        return True
                 if r.status_code not in (200, 206):
                     with self.lock:
                         print(f"[!] Failed to download {filename}, HTTP {r.status_code}")
@@ -94,8 +98,16 @@ class DownloadManager:
                     initial_size = 0
                 
                 dl = initial_size
-                if total_size == 0 and 'content-length' in r.headers:
-                    total_size = int(r.headers['content-length']) + initial_size
+                if total_size == 0:
+                    content_range = r.headers.get('content-range', '')
+                    total_match = re.search(r'/([0-9]+)$', content_range)
+                    if total_match:
+                        total_size = int(total_match.group(1))
+                    else:
+                        try:
+                            total_size = int(r.headers.get('content-length', 0)) + initial_size
+                        except (TypeError, ValueError):
+                            total_size = 0
                     
                 start_time = time.time()
                 last_print = 0
@@ -129,10 +141,12 @@ class DownloadManager:
 
     def run(self):
         print(f"Starting download of {self.total_links} files with {self.max_workers} concurrent workers...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # We use a set for tracking completed futures to keep main thread alive
-            futures = [executor.submit(self.download_file, link) for link in self.links]
-            concurrent.futures.wait(futures)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = [executor.submit(self.download_file, link) for link in self.links]
+                concurrent.futures.wait(futures)
+        finally:
+            self.solver.stop()
             
         print("\n" + "="*50)
         print(f"Finished! Completed: {self.completed_links}/{self.total_links}")

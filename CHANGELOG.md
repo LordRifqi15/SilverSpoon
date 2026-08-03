@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.4.0] - 2026-08-03
+
+### New Features
+* **Bundled Playwright Chromium**: The application now ships with a bundled version of Playwright Chromium for the CAPTCHA solver to function.
+* **Auto-Retry Failed Downloads**: Added an "Automatically retry failed downloads" option in Settings that will transparently requeue a failed or timed-out download up to 3 times before giving up.
+* **Custom CAPTCHA Timeout**: Added a new setting to explicitly define how long the background browser should wait for a Cloudflare Turnstile token before timing out (defaults to 10 seconds).
+* **Open Folder**: Added an "Open Folder" action to the right-click context menu to quickly launch the download directory in your system's file explorer.
+* **Bandwidth Limiter**: Added a new setting to cap global download speed, letting you reserve network bandwidth for other applications.
+* **CAPTCHA Solver Integration**: Replaced cloudscraper with a automated Chromium browser (but sometimes you need to check the box) to solve Cloudflare Turnstile challenges invisibly. 
+* **Inline Progress Bars**: Download progress bars are now painted behind the filename and folder text directly within the tree view.
+* **Manual Extraction**: Added an "Extract Now" option to the right-click context menu, allowing you to trigger archive extraction manually on selected batches.
+
+### Fixes & Improvements
+* **Resume Paused Stability**: Fixed a bug where a task could become stuck in a "Pausing..." state if the application was closed during a transition, and allowed "CAPTCHA Timeout" states to properly resume via the Start button.
+* **Stable Speed & ETA**: Replaced per-chunk speed swings with a 3-second rolling average, yielding much more accurate ETA calculations for files and batches.
+* **Smart Folder Names**: Improved the default folder naming logic when adding new links, automatically trimming out generic fitgirl prefixes.
+
 ## [v1.3.0] - 2026-07-17
 
 ### New Features
