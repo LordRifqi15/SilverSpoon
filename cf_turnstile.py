@@ -24,12 +24,11 @@ def find_browsers():
     browser_path = os.path.join(app_dir, "playwright-chromium", "chrome.exe")
     found = [browser_path] if os.path.isfile(browser_path) else []
     
-    # Development fallbacks
+    # Local Playwright Chromium is the second choice during development.
     la = os.environ.get("LOCALAPPDATA", "")
     pf = os.environ.get("PROGRAMFILES", "")
     pf86 = os.environ.get("PROGRAMFILES(X86)", "")
     
-    # Standard Playwright Chromium (often used in development or system installations)
     pw_root = os.path.join(la, "ms-playwright")
     if os.path.isdir(pw_root):
         for entry in sorted(os.listdir(pw_root), reverse=True):
@@ -40,13 +39,14 @@ def find_browsers():
 
     # System browser fallbacks
     system_paths = [
-        os.path.join(pf, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-        os.path.join(pf86, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-        os.path.join(la, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-        shutil.which("brave"),
         os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
         os.path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
         os.path.join(la, "Google", "Chrome", "Application", "chrome.exe"),
+        shutil.which("chrome"),
+        os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(la, "Microsoft", "Edge", "Application", "msedge.exe"),
+        shutil.which("msedge"),
     ]
     
     for path in system_paths:
