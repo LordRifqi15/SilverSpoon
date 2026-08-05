@@ -33,7 +33,7 @@ from PyQt6.QtGui import (
     QKeySequence, QPalette, QPainter, QLinearGradient, QPen, QFont,
     QPainterPath
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QRectF, QSize, QPointF, QDate, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QRectF, QSize, QPointF, QDate, pyqtSignal, pyqtSlot
 from theme_styles import DARK_THEME_QSS, LIGHT_THEME_QSS
 
 class LiveSpeedGraph(QWidget):
@@ -925,6 +925,7 @@ class DownloadTask:
         self.cancel_flag = False
         self.tree_item = None
         self.is_selected = False
+        self._dl_url = None  # resolved direct link (session-only, not persisted)
 
     def to_dict(self):
         return {
@@ -1030,6 +1031,7 @@ class MainWindow(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_ui)
         self.timer.start(500)
+        self._dl_links_text = ""
 
         # Off-peak scheduler: poll on a slow timer; boundaries flip task status.
         self.schedule = self.settings.get("schedule") or offpeak.default_schedule()
@@ -1348,6 +1350,20 @@ class MainWindow(QMainWindow):
         
         main_layout.addLayout(action_layout)
 
+        dl_links_layout = QHBoxLayout()
+        dl_links_layout.addWidget(QLabel("<b>Direct Links</b> (paste into JDownloader2, etc.):"))
+        dl_links_layout.addStretch()
+        self.copy_all_links_btn = QPushButton("Copy All Direct Links")
+        self.copy_all_links_btn.clicked.connect(self.copy_all_direct_links)
+        dl_links_layout.addWidget(self.copy_all_links_btn)
+        main_layout.addLayout(dl_links_layout)
+
+        self.dl_links_edit = QTextEdit()
+        self.dl_links_edit.setReadOnly(True)
+        self.dl_links_edit.setMaximumHeight(120)
+        self.dl_links_edit.setPlaceholderText("Resolved direct links appear here automatically as tasks are solved. One link per line.")
+        main_layout.addWidget(self.dl_links_edit)
+
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self.delete_selected()
@@ -1413,6 +1429,8 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction("Extract Now", self.manual_extract_selected)
         menu.addAction("Open Folder", self.open_selected_folder)
+        menu.addAction("Copy Direct Link", self.copy_direct_link)
+        menu.addAction("Copy All Direct Links", self.copy_all_direct_links)
         menu.addSeparator()
         menu.addAction("[R] Retry", self.retry_selected)
         menu.addAction("[F] Force Redownload", self.force_redownload_selected)
@@ -1493,6 +1511,87 @@ class MainWindow(QMainWindow):
                 self.copy_error_log(task)
                 return
         QMessageBox.information(self, "No Error Selected", "Select a failed task first, then copy its error details.")
+
+    def copy_direct_link(self):
+        tasks = self.get_selected_tasks()
+        if not tasks:
+            QMessageBox.information(self, "No Task Selected", "Select a task first, then copy its direct link.")
+            return
+        for task in tasks:
+            if task._dl_url:
+                self.show_direct_link_dialog(task._dl_url, "")
+            else:
+                threading.Thread(target=self._resolve_direct_link_for_ui, args=(task,), daemon=True).start()
+
+    def _resolve_task_url(self, task):
+        """Resolve direct link in background thread; stash on task. Returns (url, error)."""
+        prev_status = task.status
+        task.status = "Resolving Direct Link..."
+        url, err = "", ""
+        try:
+            result = self.turnstile_solver.get_direct_link(task.link)
+            url = result.get("direct_url") or ""
+            if url:
+                task._dl_url = url
+                task._dl_cookies = result.get("cookies", {})
+                task._dl_user_agent = result.get("user_agent", "")
+        except Exception as e:
+            err = str(e)
+        if task.status == "Resolving Direct Link...":
+            task.status = prev_status
+        return url, err
+
+    def _resolve_direct_link_for_ui(self, task):
+        url, err = self._resolve_task_url(task)
+        QMetaObject.invokeMethod(
+            self, "show_direct_link_dialog", Qt.ConnectionType.QueuedConnection,
+            Q_ARG(str, url), Q_ARG(str, err),
+        )
+
+    def copy_all_direct_links(self):
+        missing = [t for t in self.tasks if not t._dl_url]
+        if missing:
+            ths = [threading.Thread(target=self._resolve_task_url, args=(t,), daemon=True) for t in missing]
+            for th in ths:
+                th.start()
+
+            def _finish():
+                for th in ths:
+                    th.join()
+                QMetaObject.invokeMethod(self, "finish_copy_all", Qt.ConnectionType.QueuedConnection)
+
+            threading.Thread(target=_finish, daemon=True).start()
+        else:
+            self.finish_copy_all()
+
+    @pyqtSlot()
+    def finish_copy_all(self):
+        links = [t._dl_url for t in self.tasks if t._dl_url]
+        if not links:
+            QMessageBox.information(self, "No Direct Links", "No direct links resolved yet.")
+            return
+        text = "\n".join(links)
+        QApplication.clipboard().setText(text)
+        QMessageBox.information(self, "Copied", f"Copied {len(links)} direct link(s) to clipboard.")
+
+
+    @pyqtSlot(str, str)
+    def show_direct_link_dialog(self, url, error):
+        if not url:
+            QMessageBox.warning(self, "No Direct Link", f"Could not resolve direct link.\n{error}")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Direct Link")
+        box.setText("Direct link (usable in JDownloader2 and other downloaders):")
+        box.setInformativeText(url)
+        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        copy_btn = box.addButton("Copy Link", QMessageBox.ButtonRole.ActionRole)
+        ok_btn = box.addButton(QMessageBox.StandardButton.Ok)
+        box.setDefaultButton(ok_btn)
+        box.exec()
+        if box.clickedButton() == copy_btn:
+            QApplication.clipboard().setText(url)
+            QMessageBox.information(self, "Copied", "Direct link copied to clipboard.")
 
     def copy_error_log(self, task):
         log_path = os.path.expanduser("~/.silverspoon.log")
@@ -2474,6 +2573,12 @@ class MainWindow(QMainWindow):
             # Store the progress and status in the item's data for the custom delegate to paint
             batch_item.setData(0, Qt.ItemDataRole.UserRole, prog)
             batch_item.setData(1, Qt.ItemDataRole.UserRole, batch_status)
+
+        # Direct links panel: rebuild when a new link was resolved
+        links = "\n".join(t._dl_url for t in self.tasks if t._dl_url)
+        if links != self._dl_links_text:
+            self._dl_links_text = links
+            self.dl_links_edit.setPlainText(links)
             
     def download_manager(self):
         while True:
@@ -2668,6 +2773,7 @@ class MainWindow(QMainWindow):
             direct_link = result.get("direct_url")
             if direct_link:
                 # Stash cookies/UA on the task for the download transport
+                task._dl_url = direct_link
                 task._dl_cookies = result.get("cookies", {})
                 task._dl_user_agent = result.get("user_agent", "")
                 return direct_link
