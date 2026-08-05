@@ -105,10 +105,10 @@ class TurnstileSolver:
             self._loop_thread.start()
             ready.wait(timeout=5)
 
-    def _submit(self, coro):
+    def _submit(self, coro, timeout=None):
         self._ensure_loop()
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result()
+        return future.result(timeout=timeout)
 
     async def _close_browser(self):
         if self._browser:
@@ -473,8 +473,8 @@ class TurnstileSolver:
                 
             return {"direct_url": direct_url, "cookies": cookies, "user_agent": user_agent}
 
-    def get_direct_link(self, link):
-        return self._submit(self._resolve_direct_link_async(link))
+    def get_direct_link(self, link, timeout=None):
+        return self._submit(self._resolve_direct_link_async(link), timeout=timeout)
 
     @property
     def user_agent(self):
@@ -494,6 +494,23 @@ class TurnstileSolver:
         self._browser = None
         if self._loop is not None and self._loop.is_running():
             try:
+                # Cancel lingering tasks (wedged listener etc.) before the loop
+                # stops, so no live websockets objects survive to interpreter
+                # exit -- websockets 15 + Python 3.14 GC hangs on shutdown
+                # otherwise.
+                async def _cancel_all():
+                    tasks = [
+                        t for t in asyncio.all_tasks()
+                        if t is not asyncio.current_task()
+                    ]
+                    for t in tasks:
+                        t.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+                self._submit(_cancel_all())
+            except Exception:
+                pass
+            try:
                 self._loop.call_soon_threadsafe(self._loop.stop)
             except Exception:
                 pass
@@ -502,6 +519,13 @@ class TurnstileSolver:
     async def _stop_browser_async(self):
         if self._browser is not None:
             try:
-                self._browser.stop()
+                await asyncio.wait_for(self._browser.stop(), timeout=5.0)
             except Exception:
-                pass
+                # Graceful stop can hang when the listener task is wedged;
+                # kill the process instead. Chrome cleans stale locks itself.
+                try:
+                    proc = getattr(self._browser.config, "browser_process", None)
+                    if proc:
+                        proc.kill()
+                except Exception:
+                    pass

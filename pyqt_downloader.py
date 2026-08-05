@@ -434,6 +434,12 @@ from ui_style import button_style
 CURRENT_VERSION = "v1.5.1"
 GITHUB_REPO = "billysams21/SilverSpoon"
 
+#: Parallel CAPTCHA solver slots: one Chromium browser per slot.
+#: Kept low: several concurrent Turnstile solves from one IP raise the
+#: automation fingerprint and risk an interactive challenge.
+PARALLEL_SOLVES = 3
+OLD_EXE_CLEANUP_MARKER_SUFFIX = ".delete_old_on_start"
+
 def get_settings_path():
     return os.path.expanduser("~/.silverspoon_settings.json")
 
@@ -984,6 +990,77 @@ def save_history(tasks):
     except Exception as e:
         logging.error("Failed to save history: %s", e)
 
+class TurnstileSolverPool:
+    """Round-robin pool of independent TurnstileSolvers.
+
+    nodriver's target bookkeeping is not safe for concurrent tabs inside one
+    browser (crossed tabs -> wrong token on wrong page -> 403), so parallelism
+    comes from separate browser instances: each solver owns one browser, is
+    serial internally, solvers run in parallel. Cost: ~300MB Chromium per slot.
+
+    A wedged slot (rare nodriver listener race) is retired instead of hanging
+    the caller: the task errors out and the app's auto-retry re-queues it onto
+    a live slot.
+    """
+
+    #: Hard ceiling per resolve. Normal solve ~5-10s; covers 2 attempts + slack.
+    SOLVE_TIMEOUT = 60
+
+    def __init__(self, size, timeout):
+        self._size = size
+        self._next = 0
+        self._lock = threading.Lock()
+        self._solvers = [
+            TurnstileSolver(
+                timeout=timeout,
+                profile_dir=os.path.join(tempfile.gettempdir(), f"silverspoon_browser_profile_{i}"),
+            )
+            for i in range(size)
+        ]
+        # One solver = one browser = one websocket; a solver may only run one
+        # resolve at a time. Parallelism comes from having multiple solvers.
+        self._solver_locks = [threading.Lock() for _ in range(size)]
+
+    @property
+    def TOKEN_TIMEOUT(self):
+        return self._solvers[0].TOKEN_TIMEOUT
+
+    @TOKEN_TIMEOUT.setter
+    def TOKEN_TIMEOUT(self, value):
+        for s in self._solvers:
+            s.TOKEN_TIMEOUT = value
+
+    def get_direct_link(self, link):
+        with self._lock:
+            live = [(i, s) for i, s in enumerate(self._solvers) if s is not None]
+            if not live:
+                raise RuntimeError("All CAPTCHA solver slots are wedged. Restart the app.")
+            slot, solver = live[self._next % len(live)]
+            self._next = (self._next + 1) % len(live)
+        with self._solver_locks[slot]:
+            try:
+                return solver.get_direct_link(link, timeout=self.SOLVE_TIMEOUT)
+            except TimeoutError:
+                with self._lock:
+                    solver = self._solvers[slot]
+                    self._solvers[slot] = None
+                # Best-effort: kill the wedged solver's browser so it does not
+                # linger holding the profile dir.
+                threading.Thread(target=solver.stop, daemon=True).start()
+                raise RuntimeError(
+                    "CAPTCHA solver slot timed out and was retired. The task will be "
+                    "retried on another slot."
+                ) from None
+
+    def stop(self):
+        for s in self._solvers:
+            if s is not None:
+                try:
+                    s.stop()
+                except Exception:
+                    pass
+
+
 class MainWindow(QMainWindow):
     # Emitted from the connectivity-probe thread once a window-open probe
     # succeeds; carries `now` and is handled on the GUI thread.
@@ -1008,7 +1085,7 @@ class MainWindow(QMainWindow):
         self.tasks = []
         self.max_workers = self.settings.get("max_workers", 3)
         captcha_timeout = self.settings.get("captcha_timeout", 10)
-        self.turnstile_solver = TurnstileSolver(timeout=captcha_timeout)
+        self.turnstile_solver = TurnstileSolverPool(PARALLEL_SOLVES, captcha_timeout)
         self.dl_session = curl_requests.Session(impersonate="chrome")
         self.is_all_selected = False
         self.extracted_folders = set()

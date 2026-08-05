@@ -107,6 +107,8 @@ This fork (`LordRifqi15/SilverSpoon`) adds the following on top of the original:
 * **Direct Links panel** below the download table: shows every resolved direct link live, one per line — ready to paste into JDownloader2 or any other downloader (links work without cookies).
 * **Copy Direct Link** (right-click on a task): shows the resolved link with a copy button; resolves on demand in the background if the task hasn't been downloaded yet.
 * **Copy All Direct Links** (panel button + context menu): resolves any missing links in the queue and copies the full list to the clipboard.
+* **Parallel CAPTCHA solving:** Direct links are resolved by a pool of 3 independent browser instances (`TurnstileSolverPool`), so resolving a 20-part archive takes seconds instead of a serial ~5 s/link. Each solver is serial internally — nodriver's target bookkeeping is not safe for concurrent tabs inside one browser (crossed tabs → token evaluated on the wrong page → 403), so parallelism comes from separate browsers, one profile per slot (`/tmp/silverspoon_browser_profile_{0..2}`). A wedged slot (rare nodriver listener race) is timed out and retired; the task auto-retries on a live slot.
+* **Cleaner shutdown:** `stop()` now awaits the browser shutdown (the original called it without `await`, leaving zombie Chromium processes) and cancels lingering websocket tasks first, avoiding a hang at interpreter exit on Python 3.14.
 
 ## Contributing
 
