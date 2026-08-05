@@ -25,28 +25,40 @@ def find_browsers():
     found = [browser_path] if os.path.isfile(browser_path) else []
     
     # Local Playwright Chromium is the second choice during development.
+    # Windows: %LOCALAPPDATA%\ms-playwright, Linux: ~/.cache/ms-playwright
     la = os.environ.get("LOCALAPPDATA", "")
-    pf = os.environ.get("PROGRAMFILES", "")
-    pf86 = os.environ.get("PROGRAMFILES(X86)", "")
-    
-    pw_root = os.path.join(la, "ms-playwright")
-    if os.path.isdir(pw_root):
-        for entry in sorted(os.listdir(pw_root), reverse=True):
-            if entry.startswith("chromium-") and not entry.startswith("chromium_headless"):
-                dev_path = os.path.join(pw_root, entry, "chrome-win64", "chrome.exe")
-                if os.path.isfile(dev_path):
-                    found.append(dev_path)
+    pw_roots = []
+    if la:
+        pw_roots.append(os.path.join(la, "ms-playwright"))
+    linux_pw = os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright")
+    if linux_pw not in pw_roots:
+        pw_roots.append(linux_pw)
+    subdirs = ["chrome-win64", "chrome-linux64", "chrome-linux"]
+    for pw_root in pw_roots:
+        if os.path.isdir(pw_root):
+            for entry in sorted(os.listdir(pw_root), reverse=True):
+                if entry.startswith("chromium-") and not entry.startswith("chromium_headless"):
+                    for sub in subdirs:
+                        dev_path = os.path.join(pw_root, entry, sub, "chrome" + (".exe" if sub == "chrome-win64" else ""))
+                        if os.path.isfile(dev_path):
+                            found.append(dev_path)
 
     # System browser fallbacks
+    pf = os.environ.get("PROGRAMFILES", "")
+    pf86 = os.environ.get("PROGRAMFILES(X86)", "")
     system_paths = [
         os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
         os.path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
         os.path.join(la, "Google", "Chrome", "Application", "chrome.exe"),
-        shutil.which("chrome"),
         os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
         os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
         os.path.join(la, "Microsoft", "Edge", "Application", "msedge.exe"),
+        shutil.which("chrome"),
         shutil.which("msedge"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
     ]
     
     for path in system_paths:
@@ -229,6 +241,7 @@ class TurnstileSolver:
 
     async def _resolve_fuckingfast_async(self, link, tab):
         file_id = link.split("/")[-1].split("#")[0]
+        base_url = link.split("#")[0]  # fragment in HX-Current-URL/Referer breaks /go verification
         challenge_state = await tab.evaluate(
             "JSON.stringify({token:window.turnstileToken||"
             "document.querySelector('[name=\"cf-turnstile-response\"]')?.value||'',"
@@ -290,7 +303,7 @@ class TurnstileSolver:
         fetch_js = (
             "(async()=>{const r=await fetch('/f/" + file_id + "/go',"
             "{method:'POST',headers:{'HX-Request':'true','HX-Target':'',"
-            "'HX-Current-URL':'" + link + "','Referer':'" + link + "'},"
+            "'HX-Current-URL':'" + base_url + "','Referer':'" + base_url + "'},"
             "body:new URLSearchParams({'cf-turnstile-response':window.turnstileToken||"
             "document.querySelector('[name=\"cf-turnstile-response\"]')?.value||''})});"
             "const h=r.headers.get('Hx-Redirect')||r.headers.get('hx-redirect');"
