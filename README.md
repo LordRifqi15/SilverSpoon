@@ -92,6 +92,22 @@ If you prefer the command line:
    ```
 *(Files will be downloaded to the current working directory).*
 
+## Fork: Changes from Upstream
+
+This fork (`LordRifqi15/SilverSpoon`) adds the following on top of the original:
+
+### Linux support fixes
+* **Chromium discovery on Linux:** The original `find_browsers()` only knew Windows layouts (`playwright-chromium\chrome.exe`, `%LOCALAPPDATA%\ms-playwright`, Program Files Chrome/Edge), so on Linux every download failed with *"Bundled Playwright Chromium was not found"*. It now also scans:
+  * `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome` (current Playwright layout) and `chrome-linux`
+  * System browsers on `PATH`: `chromium`, `chromium-browser`, `google-chrome`, `google-chrome-stable`
+* **Fragment-free `/go` POST:** The original sent the full task link (including the `#filename` fragment) in the `HX-Current-URL` / `Referer` headers of the direct-link POST, which the host rejected with `403 captcha verification failed` — even though the CAPTCHA itself had solved successfully. The fragment is now stripped before posting.
+* **Python 3.14 note:** If you hit `SyntaxError: Non-UTF-8 code starting with '\xb1'` inside `nodriver/cdp/network.py` (nodriver 0.50.3), patch the vendored file: replace the raw `\xb1` byte in the `#: JSON (…)` comment with UTF-8 `±`. This is a venv-level fix, not committed here.
+
+### Direct link sharing
+* **Direct Links panel** below the download table: shows every resolved direct link live, one per line — ready to paste into JDownloader2 or any other downloader (links work without cookies).
+* **Copy Direct Link** (right-click on a task): shows the resolved link with a copy button; resolves on demand in the background if the task hasn't been downloaded yet.
+* **Copy All Direct Links** (panel button + context menu): resolves any missing links in the queue and copies the full list to the clipboard.
+
 ## Contributing
 
 We welcome contributions! If you'd like to help improve SilverSpoon, please see our [Contributing Guide](CONTRIBUTING.md) for instructions on how to set up your environment, follow our branching strategy (`dev` branch), and submit Pull Requests.
