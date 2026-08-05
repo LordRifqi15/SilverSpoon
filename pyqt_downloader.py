@@ -2911,14 +2911,19 @@ class MainWindow(QMainWindow):
     def get_direct_link(self, task):
         try:
             task.status = "Solving CAPTCHA..."
-            result = self.turnstile_solver.get_direct_link(task.link)
-            direct_link = result.get("direct_url")
+            # Shared with the direct-link feature: token-first (one solve
+            # covers all links), browser fallback on expiry/rejection. Stashes
+            # _dl_url/_dl_cookies/_dl_user_agent on the task on success.
+            direct_link, err = self._resolve_task_url(task)
             if direct_link:
-                # Stash cookies/UA on the task for the download transport
-                task._dl_url = direct_link
-                task._dl_cookies = result.get("cookies", {})
-                task._dl_user_agent = result.get("user_agent", "")
                 return direct_link
+            if err:
+                if "after " in err and " seconds" in err:
+                    task.status = "CAPTCHA Timeout"
+                else:
+                    task.status = "Error"
+                task.error_message = f"Could not get the direct download link. {format_error_message(err)}"
+                return None
             task.status = "CAPTCHA Timeout"
             task.error_message = "The file host did not return a direct download link. The link may be expired or unavailable."
         except Exception as e:
