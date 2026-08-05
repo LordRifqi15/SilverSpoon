@@ -1087,6 +1087,13 @@ class MainWindow(QMainWindow):
         captcha_timeout = self.settings.get("captcha_timeout", 10)
         self.turnstile_solver = TurnstileSolverPool(PARALLEL_SOLVES, captcha_timeout)
         self.dl_session = curl_requests.Session(impersonate="chrome")
+        #: One Turnstile token resolves every file; cache it after the first
+        #: solve and reuse for the remaining links (browser solve only on
+        #: expiry). TOKEN_TTL is conservative under Cloudflare's ~5 min cap.
+        self._last_token = None
+        self._last_token_at = 0.0
+        self._token_cookies = {}
+        self.TOKEN_TTL = 240
         self.is_all_selected = False
         self.extracted_folders = set()
         
@@ -1600,18 +1607,71 @@ class MainWindow(QMainWindow):
             else:
                 threading.Thread(target=self._resolve_direct_link_for_ui, args=(task,), daemon=True).start()
 
+    def _resolve_via_token(self, link, token):
+        """POST /f/<id>/go with a previously solved token, no browser needed.
+
+        The site accepts one Turnstile token for every file (no per-file
+        binding, no single-use check server-side). Mirrors the browser-side
+        fetch: fragment-free HX-Current-URL/Referer, cf-turnstile-response
+        form field.
+        """
+        file_id = link.split("/")[-1].split("#")[0]
+        base_url = link.split("#")[0]
+        r = self.dl_session.post(
+            f"https://fuckingfast.co/f/{file_id}/go",
+            headers={
+                "HX-Request": "true",
+                "HX-Target": "",
+                "HX-Current-URL": base_url,
+                "Referer": base_url,
+            },
+            data={"cf-turnstile-response": token},
+            timeout=30,
+        )
+        url = r.headers.get("hx-redirect")
+        if r.status_code != 200 or not url:
+            raise RuntimeError(
+                f"POST /go returned HTTP {r.status_code}: {r.text[:120]}"
+            )
+        return url
+
+    def _store_token(self, result):
+        token = result.get("token") or ""
+        if len(token) > 20:
+            self._last_token = token
+            self._last_token_at = time.time()
+            self._token_cookies = result.get("cookies", {})
+            for k, v in self._token_cookies.items():
+                self.dl_session.cookies.set(k, v)
+
     def _resolve_task_url(self, task):
         """Resolve direct link in background thread; stash on task. Returns (url, error)."""
         prev_status = task.status
         task.status = "Resolving Direct Link..."
         url, err = "", ""
         try:
-            result = self.turnstile_solver.get_direct_link(task.link)
-            url = result.get("direct_url") or ""
+            token = (
+                self._last_token
+                if time.time() - self._last_token_at < self.TOKEN_TTL
+                else None
+            )
+            if token:
+                try:
+                    url = self._resolve_via_token(task.link, token)
+                except Exception as e:
+                    # Only a rejection (403) means the token is dead; transient
+                    # errors must not nuke the shared token for the other tasks.
+                    if "403" in str(e):
+                        self._last_token = None
+                    url = ""
+            if not url:
+                result = self.turnstile_solver.get_direct_link(task.link)
+                url = result.get("direct_url") or ""
+                task._dl_user_agent = result.get("user_agent", "")
+                self._store_token(result)
             if url:
                 task._dl_url = url
-                task._dl_cookies = result.get("cookies", {})
-                task._dl_user_agent = result.get("user_agent", "")
+                task._dl_cookies = self._token_cookies
         except Exception as e:
             err = str(e)
         if task.status == "Resolving Direct Link...":
@@ -1628,16 +1688,21 @@ class MainWindow(QMainWindow):
     def copy_all_direct_links(self):
         missing = [t for t in self.tasks if not t._dl_url]
         if missing:
-            ths = [threading.Thread(target=self._resolve_task_url, args=(t,), daemon=True) for t in missing]
-            for th in ths:
-                th.start()
-
-            def _finish():
+            def _worker():
+                # Resolve the first link first: the solve stashes a token that
+                # every other link reuses, so the rest of the batch costs one
+                # raw POST each instead of one browser solve each. Runs off the
+                # main thread so the UI does not freeze during the first solve.
+                self._resolve_task_url(missing[0])
+                rest = [t for t in self.tasks if not t._dl_url]
+                ths = [threading.Thread(target=self._resolve_task_url, args=(t,), daemon=True) for t in rest]
+                for th in ths:
+                    th.start()
                 for th in ths:
                     th.join()
                 QMetaObject.invokeMethod(self, "finish_copy_all", Qt.ConnectionType.QueuedConnection)
 
-            threading.Thread(target=_finish, daemon=True).start()
+            threading.Thread(target=_worker, daemon=True).start()
         else:
             self.finish_copy_all()
 

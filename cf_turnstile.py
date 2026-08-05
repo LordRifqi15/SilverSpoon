@@ -140,6 +140,18 @@ class TurnstileSolver:
                 "SilverSpoon and keep the playwright-chromium folder beside the executable."
             )
         os.makedirs(self._profile_dir, exist_ok=True)
+        # A crashed/orphaned Chromium leaves Singleton* files that make a new
+        # instance hand off to the dead one and exit silently ("Failed to
+        # connect to browser"). Clear them so each start is clean. Safe: a
+        # live browser would mean self._browser is not None and we returned
+        # above, so nothing is using this profile dir right now.
+        for stale in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            p = os.path.join(self._profile_dir, stale)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
         last_err = None
         for bp in candidates:
             try:
@@ -471,7 +483,16 @@ class TurnstileSolver:
             except Exception as e:
                 logger.warning("TurnstileSolver: could not clear tab after solve: %s", e)
                 
-            return {"direct_url": direct_url, "cookies": cookies, "user_agent": user_agent}
+            return {
+                "direct_url": direct_url,
+                "cookies": cookies,
+                "user_agent": user_agent,
+                #: One Turnstile token resolves every file on the site (verified
+                #: empirically: same token -> /f/<id>/go 200 + Hx-Redirect for any
+                #: id, valid minutes). The GUI reuses it for the other links
+                #: instead of solving once per link.
+                "token": token,
+            }
 
     def get_direct_link(self, link, timeout=None):
         return self._submit(self._resolve_direct_link_async(link), timeout=timeout)
