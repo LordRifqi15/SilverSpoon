@@ -1,0 +1,64 @@
+name: Build Windows Executable
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller playwright
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium
+
+      - name: Build with PyInstaller
+        run: >
+          pyinstaller --clean --noconsole --onedir --icon="SilverSpoon.ico"
+          --add-binary "7z.exe;." --add-binary "7z.dll;."
+          --add-data "SilverSpoon.ico;." --add-data "SilverSpoon.png;."
+          --name "SilverSpoon" pyqt_downloader.py
+
+      - name: Bundle Playwright Chromium into dist
+        shell: pwsh
+        run: |
+          $source = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'ms-playwright') -Directory -Filter 'chromium-*' |
+            Where-Object { $_.Name -notlike 'chromium_headless*' } |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName 'chrome-win64' } |
+            Where-Object { Test-Path (Join-Path $_ 'chrome.exe') } |
+            Select-Object -First 1
+          if (-not $source) {
+            Write-Error 'Playwright Chromium was not found under %LOCALAPPDATA%\ms-playwright.'
+            exit 1
+          }
+          Copy-Item -LiteralPath $source -Destination 'dist\SilverSpoon\playwright-chromium' -Recurse -Force
+
+      - name: Zip distribution
+        shell: pwsh
+        run: Compress-Archive -Path 'dist\SilverSpoon\*' -DestinationPath 'SilverSpoon-windows.zip'
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SilverSpoon-windows
+          path: SilverSpoon-windows.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SilverSpoon-windows.zip
