@@ -8,6 +8,7 @@ import urllib.request
 import tempfile
 import threading
 import re
+import logging
 
 _VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(.*)$", re.IGNORECASE)
 
@@ -170,7 +171,8 @@ class UpdateDownloaderDialog(QDialog):
             self.error = str(e)
             if self.temp_zip and os.path.exists(self.temp_zip):
                 try: os.remove(self.temp_zip)
-                except: pass
+                except Exception:
+                    logging.debug("Failed to remove temp zip during cleanup", exc_info=True)
         finally:
             self.finished = True
 
