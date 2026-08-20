@@ -722,10 +722,8 @@ class MainWindow(QMainWindow):
             if sys.platform == 'win32':
                 os.startfile(folder_path)
             elif sys.platform == 'darwin':
-                import subprocess
                 subprocess.Popen(['open', folder_path])
             else:
-                import subprocess
                 subprocess.Popen(['xdg-open', folder_path])
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not open folder:\n{e}")
@@ -1676,7 +1674,6 @@ class MainWindow(QMainWindow):
                     extractor_type = '7z'
                     base_cmd = bundled_7z
             else:
-                import shutil
                 if shutil.which('7z'):
                     extractor_type = '7z'
                     base_cmd = '7z'
