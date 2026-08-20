@@ -30,6 +30,7 @@ jobs:
           pyinstaller --clean --noconsole --onedir --icon="SilverSpoon.ico"
           --add-binary "7z.exe;." --add-binary "7z.dll;."
           --add-data "SilverSpoon.ico;." --add-data "SilverSpoon.png;."
+          --copy-metadata "curl_cffi"
           --name "SilverSpoon" pyqt_downloader.py
 
       - name: Bundle Playwright Chromium into dist
@@ -49,7 +50,7 @@ jobs:
 
       - name: Zip distribution
         shell: pwsh
-        run: Compress-Archive -Path 'dist\SilverSpoon\*' -DestinationPath 'SilverSpoon-windows.zip'
+        run: Compress-Archive -Path 'dist\SilverSpoon' -DestinationPath 'SilverSpoon-windows.zip'
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
