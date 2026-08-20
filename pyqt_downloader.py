@@ -60,6 +60,7 @@ from curl_cffi import requests as curl_requests
 from cf_turnstile import TurnstileSolver
 from PyQt6.QtCore import QMetaObject, Q_ARG
 from update_logic import UpdateCheckerThread, UpdateDownloaderDialog
+from ui_style import button_style
 
 CURRENT_VERSION = "v1.4.0"
 GITHUB_REPO = "billysams21/SilverSpoon"
@@ -130,6 +131,7 @@ def format_error_message(error, max_length=160):
     if len(text) > max_length:
         text = text[:max_length].rstrip() + "..."
     return f"{error_type}: {text}"
+
 
 class WarningDialog(QDialog):
     def __init__(self, settings, parent=None):
@@ -520,7 +522,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.text_links)
         
         add_btn = QPushButton("Add Links to Queue")
-        add_btn.setStyleSheet("background-color: #2e55cc; color: white; font-weight: bold; padding: 6px;")
+        add_btn.setStyleSheet(button_style("#2e55cc"))
         add_btn.clicked.connect(self.add_links)
         main_layout.addWidget(add_btn)
 
@@ -579,37 +581,37 @@ class MainWindow(QMainWindow):
         action_layout.addWidget(self.select_all_btn)
         
         self.start_btn = QPushButton("Start / Resume")
-        self.start_btn.setStyleSheet("background-color: #2ecc71; color: white; font-weight: bold; padding: 6px;")
+        self.start_btn.setStyleSheet(button_style("#2ecc71"))
         self.start_btn.clicked.connect(self.start_downloads)
         action_layout.addWidget(self.start_btn)
         
         self.pause_btn = QPushButton("Pause")
-        self.pause_btn.setStyleSheet("background-color: #f39c12; color: white; font-weight: bold; padding: 6px;")
+        self.pause_btn.setStyleSheet(button_style("#f39c12"))
         self.pause_btn.clicked.connect(self.pause_selected)
         action_layout.addWidget(self.pause_btn)
         
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold; padding: 6px;")
+        self.cancel_btn.setStyleSheet(button_style("#e74c3c"))
         self.cancel_btn.clicked.connect(self.cancel_selected)
         action_layout.addWidget(self.cancel_btn)
         
         self.retry_btn = QPushButton("Retry")
-        self.retry_btn.setStyleSheet("background-color: #9b59b6; color: white; font-weight: bold; padding: 6px;")
+        self.retry_btn.setStyleSheet(button_style("#9b59b6"))
         self.retry_btn.clicked.connect(self.retry_selected)
         action_layout.addWidget(self.retry_btn)
 
         self.force_redownload_btn = QPushButton("Force Redownload")
-        self.force_redownload_btn.setStyleSheet("background-color: #300101; color: white; font-weight: bold; padding: 6px;")
+        self.force_redownload_btn.setStyleSheet(button_style("#300101"))
         self.force_redownload_btn.clicked.connect(self.force_redownload_selected)
         action_layout.addWidget(self.force_redownload_btn)
 
         self.copy_log_btn = QPushButton("Copy Error Details")
-        self.copy_log_btn.setStyleSheet("background-color: #555; color: white; font-weight: bold; padding: 6px;")
+        self.copy_log_btn.setStyleSheet(button_style("#555"))
         self.copy_log_btn.clicked.connect(self.copy_selected_error_log)
         action_layout.addWidget(self.copy_log_btn)
         
         self.delete_btn = QPushButton("🗑️ Delete")
-        self.delete_btn.setStyleSheet("background-color: #34495e; color: white; font-weight: bold; padding: 6px;")
+        self.delete_btn.setStyleSheet(button_style("#34495e"))
         self.delete_btn.clicked.connect(self.delete_selected)
         action_layout.addWidget(self.delete_btn)
         
