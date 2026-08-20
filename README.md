@@ -13,6 +13,7 @@ A Python-based bulk downloader designed to bypass Cloudflare protections on file
 * **Grouped Batch Folders:** Downloads are neatly organized into collapsible dropdown trees, showing aggregated progress, speed, and ETA for entire batches.
 * **Smart Folder Grouping & Batching:** Automatically suggests a unified folder name for a batch of links, perfectly grouping main game parts and messy optional files together.
 * **Persistent Settings:** Your preferences (save directory, concurrent workers, extraction options) are saved and remembered for your next session.
+* **Scheduled Off-Peak Downloads:** Define an off-peak window (e.g. `02:00`–`06:00`), repeating on chosen weekdays or as a one-off date. SilverSpoon checks your connection and auto-starts the queue when the window opens, keeps the machine awake while it runs, pauses when the window closes, and shows a summary of what was downloaded (files completed, total GB, average/peak speed, duration) — also appended to a persistent report log. On Windows it can optionally register a **wake timer** that powers the PC on and launches the app at the window start.
 * **Import Links & Clipboard:** Easily load bulk link lists from `.txt` files directly via the File menu, or use the "Paste from Clipboard" button for styled-free pasting.
 * **Live Speed & ETAs:** Features a real-time global download speed tracker and Calculates Estimated Time Remaining (ETA) for both individual files and total batch completions.
 * **Customizable UI & Shortcuts:** Interactive, resizable columns that save their state, plus right-click context menus and handy keyboard shortcuts (e.g., `Space` to pause/resume, `Delete` to remove tasks).
@@ -64,6 +65,17 @@ python pyqt_downloader.py
 8. Click the green **Start / Resume** button to begin downloading.
 ![App Screenshot 3](assets/screenshot3.png)
 9. Use the **Pause** and **Start / Resume** buttons to manage your selected downloads at any time.
+
+### Scheduling Off-Peak Downloads
+Queue your links, then let SilverSpoon download them during off-peak hours automatically:
+1. Add and select your links as usual, but leave them **paused/queued** (don't press Start).
+2. Open `File -> Off-Peak Schedule...`.
+3. Tick **Enable scheduled off-peak downloads** and set the **Start** and **End** times. If the end is earlier than the start, the window is treated as crossing midnight (e.g. `23:00`–`05:00`).
+4. Choose **Repeat weekly** (and pick the active days) or **Run once** on a specific date.
+5. *(Optional, Windows)* Tick **Wake the computer to run downloads** to register a Windows wake timer that powers the PC on and launches SilverSpoon when the window starts. Leave **Keep the computer awake** on so it doesn't sleep mid-download.
+6. Click **OK**. When the window opens, SilverSpoon verifies your connection and starts the queue; when it closes, it pauses everything and shows a summary (also saved to `~/.silverspoon_offpeak_report.jsonl`).
+
+> **Note:** The wake timer is Windows-only. On Linux/macOS the app still auto-starts and keeps the display awake while it is running, but it cannot power the machine on from a fully off state.
 
 ### Using the CLI
 If you prefer the command line:

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### New Features
+* **Scheduled Off-Peak Downloads**: Added a `File -> Off-Peak Schedule...` dialog to define a download window (repeating weekly on chosen days, or a one-off date; windows may cross midnight). When the window opens, SilverSpoon checks connectivity and auto-starts the queued downloads, keeping the machine awake while it runs; when it closes, it pauses active tasks and shows a summary (files completed, total GB, average/peak speed, duration) that is also appended to `~/.silverspoon_offpeak_report.jsonl`. On Windows the schedule can optionally register a **wake timer** that powers the PC on and launches the app at the window start; other platforms fall back to keep-awake while running. Backward-compatible: existing installs with no schedule configured behave exactly as before.
+
 ## [v1.4.0] - 2026-08-03
 
 ### New Features
