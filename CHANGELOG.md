@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### New Features
+* **Download Scheduler**: Added a `File -> Download Scheduler` dialog to define a download window (repeating weekly on chosen days, or a one-off date; windows may cross midnight) — times are set with clear hour / minute / AM–PM dropdowns. Downloads can also be scheduled individually via the right-click **Schedule download at specific interval** action, targeting only the selected download(s) instead of the whole queue. When the window opens, SilverSpoon checks connectivity and auto-starts the scheduled downloads, keeping the machine awake while it runs; when it closes, it pauses them and shows a summary (files completed, total GB, average/peak speed, duration) that is also appended to `~/.silverspoon_offpeak_report.jsonl`. On Windows the schedule can optionally register a **wake timer** that powers the PC on and launches the app at the window start; other platforms fall back to keep-awake while running. Backward-compatible: existing installs with no schedule configured behave exactly as before.
+
 ## [v1.4.0] - 2026-08-03
 
 ### New Features
