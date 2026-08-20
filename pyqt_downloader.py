@@ -23,9 +23,10 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTextEdit, QTreeWidget,
     QTreeWidgetItem, QHeaderView, QFileDialog, QAbstractItemView,
     QCheckBox, QDialog, QFormLayout, QSpinBox, QDialogButtonBox,
-    QMessageBox, QInputDialog, QSplashScreen, QMenu, QStyledItemDelegate
+    QMessageBox, QInputDialog, QSplashScreen, QMenu, QStyledItemDelegate,
+    QComboBox
 )
-from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QPixmap, QColor, QBrush, QKeySequence
+from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QPixmap, QColor, QBrush, QKeySequence, QPalette
 from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent
 
 class ProgressBarDelegate(QStyledItemDelegate):
@@ -79,6 +80,7 @@ def load_settings():
         default_downloads = os.path.abspath(".")
         
     default_settings = {
+        "theme": "Light",
         "default_save_dir": default_downloads,
         "max_workers": 3,
         "extract_after_download": False,
@@ -109,6 +111,41 @@ def save_settings(settings):
             json.dump(settings, f, indent=4)
     except Exception as e:
         print(f"Failed to save settings: {e}")
+
+def apply_theme(app, theme_name):
+    if theme_name == "Dark":
+        app.setStyle("Fusion")
+        dark_palette = QPalette()
+        dark_palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Base, QColor(35, 35, 35))
+        dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+        dark_palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
+        app.setPalette(dark_palette)
+        
+        # Override specific widget styles for dark mode
+        app.setStyleSheet("""
+            QToolTip { color: #ffffff; background-color: #2a82da; border: 1px solid white; }
+            QLineEdit, QTextEdit, QSpinBox, QComboBox { 
+                background-color: #2b2b2b; color: white; border: 1px solid #555; border-radius: 3px; padding: 2px;
+            }
+            QTreeWidget { background-color: #2b2b2b; alternate-background-color: #353535; color: white; }
+            QHeaderView::section { background-color: #353535; color: white; border: 1px solid #555; padding: 4px; }
+            QMenu { background-color: #353535; color: white; border: 1px solid #555; }
+            QMenu::item:selected { background-color: #2a82da; color: black; }
+        """)
+    else:
+        app.setStyle("windowsvista" if sys.platform == "win32" else "Fusion")
+        app.setPalette(app.style().standardPalette())
+        app.setStyleSheet("")
 
 def format_error_message(error, max_length=160):
     text = str(error).strip()
@@ -169,7 +206,8 @@ class WarningDialog(QDialog):
             "it keeps failing, <b>TURN OFF YOUR VPN</b>."
         )
         warning_text.setWordWrap(True)
-        warning_text.setStyleSheet("color: black; font-weight: bold; padding: 10px; background-color: #ffffff; border-radius: 5px;")
+        # Use a dynamic style based on the current palette instead of hardcoded white/black
+        warning_text.setStyleSheet("font-weight: bold; padding: 10px; border: 1px solid #e74c3c; border-radius: 5px;")
         layout.addWidget(warning_text)
         
         # Don't show again checkbox
@@ -195,6 +233,13 @@ class SettingsDialog(QDialog):
         self.current_settings = current_settings
         
         layout = QFormLayout(self)
+        
+        # Application Theme
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Light", "Dark"])
+        current_theme = self.current_settings.get("theme", "Light")
+        self.theme_combo.setCurrentText(current_theme)
+        layout.addRow("Application Theme:", self.theme_combo)
         
         # Save Directory
         dir_layout = QHBoxLayout()
@@ -268,6 +313,7 @@ class SettingsDialog(QDialog):
                 default_dir = os.path.abspath(".")
             
             self.dir_input.setText(default_dir)
+            self.theme_combo.setCurrentText("Light")
             self.workers_spinbox.setValue(3)
             self.bandwidth_spinbox.setValue(0)
             self.captcha_spinbox.setValue(10)
@@ -281,6 +327,7 @@ class SettingsDialog(QDialog):
 
     def get_updated_settings(self):
         return {
+            "theme": self.theme_combo.currentText(),
             "default_save_dir": self.dir_input.text(),
             "max_workers": self.workers_spinbox.value(),
             "bandwidth_limit": self.bandwidth_spinbox.value(),
@@ -1053,6 +1100,7 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self.settings = dialog.get_updated_settings()
             save_settings(self.settings)
+            apply_theme(QApplication.instance(), self.settings.get("theme", "Light"))
             self.max_workers = self.settings.get("max_workers", 3)
             new_timeout = self.settings.get("captcha_timeout", 10)
             self.turnstile_solver.TOKEN_TIMEOUT = new_timeout
@@ -1953,6 +2001,10 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    
+    # Load settings to apply initial theme
+    initial_settings = load_settings()
+    apply_theme(app, initial_settings.get("theme", "Light"))
     
     # Determine base directory for assets
     if hasattr(sys, '_MEIPASS'):
