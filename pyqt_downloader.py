@@ -35,14 +35,102 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItem, QHeaderView, QFileDialog, QAbstractItemView,
     QCheckBox, QDialog, QFormLayout, QSpinBox, QDialogButtonBox,
     QMessageBox, QInputDialog, QSplashScreen, QMenu, QStyledItemDelegate,
-    QComboBox, QFrame, QGridLayout, QProgressBar
+    QComboBox, QFrame, QGridLayout, QProgressBar, QSizePolicy
 )
 from PyQt6.QtGui import (
     QAction, QDesktopServices, QIcon, QPixmap, QColor, QBrush, 
-    QKeySequence, QPalette, QPainter, QLinearGradient, QPen, QFont
+    QKeySequence, QPalette, QPainter, QLinearGradient, QPen, QFont,
+    QPainterPath
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QRectF, QSize
+from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QRectF, QSize, QPointF
 from theme_styles import DARK_THEME_QSS, LIGHT_THEME_QSS
+
+class LiveSpeedGraph(QWidget):
+    def __init__(self, max_points=30, parent=None):
+        super().__init__(parent)
+        self.history = deque([0.0] * max_points, maxlen=max_points)
+        self.setFixedHeight(34)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+
+    def add_sample(self, speed_mb):
+        self.history.append(float(speed_mb))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        rect = self.rect()
+        w = float(rect.width())
+        h = float(rect.height())
+
+        if w <= 0 or h <= 0:
+            return
+
+        window_bg = self.palette().color(QPalette.ColorRole.Window)
+        is_dark = window_bg.lightness() < 128
+
+        # Draw subtle frame background
+        bg_col = QColor(10, 12, 16, 160) if is_dark else QColor(241, 245, 249, 160)
+        border_col = QColor(34, 39, 49, 140) if is_dark else QColor(203, 213, 225, 140)
+        painter.setPen(QPen(border_col, 1))
+        painter.setBrush(QBrush(bg_col))
+        painter.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 2, 2)
+
+        data = list(self.history)
+        n = len(data)
+        if n < 2:
+            return
+
+        max_val = max(data)
+        if max_val <= 0.05:
+            max_val = 1.0  # baseline scale
+        else:
+            max_val = max_val * 1.25  # 25% headroom
+
+        top_padding = 4.0
+        bottom_padding = 4.0
+        draw_h = h - top_padding - bottom_padding
+
+        step_x = (w - 2.0) / (n - 1)
+        points = []
+        for i, val in enumerate(data):
+            px = 1.0 + i * step_x
+            ratio = min(1.0, max(0.0, val / max_val))
+            py = (h - bottom_padding) - (ratio * draw_h)
+            points.append(QPointF(px, py))
+
+        # Filled area underneath the graph line
+        fill_path = QPainterPath()
+        fill_path.moveTo(points[0].x(), h - 1.0)
+        for pt in points:
+            fill_path.lineTo(pt)
+        fill_path.lineTo(points[-1].x(), h - 1.0)
+        fill_path.closeSubpath()
+
+        grad = QLinearGradient(0, 0, 0, h)
+        if is_dark:
+            grad.setColorAt(0.0, QColor(63, 185, 80, 75))
+            grad.setColorAt(1.0, QColor(63, 185, 80, 5))
+            line_color = QColor(63, 185, 80, 230)
+        else:
+            grad.setColorAt(0.0, QColor(26, 127, 55, 60))
+            grad.setColorAt(1.0, QColor(26, 127, 55, 5))
+            line_color = QColor(26, 127, 55, 230)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(grad))
+        painter.drawPath(fill_path)
+
+        # Line on top
+        line_path = QPainterPath()
+        line_path.moveTo(points[0])
+        for pt in points[1:]:
+            line_path.lineTo(pt)
+
+        painter.setPen(QPen(line_color, 1.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(line_path)
 
 class ModernTaskDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
@@ -63,38 +151,11 @@ class ModernTaskDelegate(QStyledItemDelegate):
         if status is None:
             status = item.text(2) if item else ""
 
-        # Column 0: Filename / Batch Folder with ambient subtle background progress fill
+        # Column 0: Clean native render (no background tinting for maximum text clarity)
         if col == 0:
-            if progress is not None and isinstance(progress, (int, float)) and progress > 0:
-                is_error = "Error" in status or status == "Contains Errors"
-                is_done = status in ("Completed", "Extracted")
-                is_active = status in ("Downloading", "Active", "Extracting...")
+            pass
 
-                if is_error:
-                    grad_start = QColor(239, 68, 68, 30)
-                    grad_end = QColor(239, 68, 68, 50)
-                elif is_done:
-                    grad_start = QColor(34, 197, 94, 25)
-                    grad_end = QColor(34, 197, 94, 45)
-                elif is_active:
-                    grad_start = QColor(56, 189, 248, 20)
-                    grad_end = QColor(37, 99, 235, 40)
-                else:
-                    grad_start = QColor(148, 163, 184, 15)
-                    grad_end = QColor(148, 163, 184, 25)
-
-                prog_width = int(rect.width() * (min(100.0, max(0.0, float(progress))) / 100.0))
-                fill_rect = QRectF(rect.x() + 1, rect.y() + 1, max(0, prog_width - 2), rect.height() - 2)
-
-                gradient = QLinearGradient(fill_rect.topLeft(), fill_rect.bottomRight())
-                gradient.setColorAt(0, grad_start)
-                gradient.setColorAt(1, grad_end)
-
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(gradient))
-                painter.drawRect(fill_rect)
-
-        # Column 2: Status Tag (Crisp subtle border, minimal rounding)
+        # Column 2: Status Tag (Crisp subtle border, minimal rounding, theme-aware contrast)
         elif col == 2:
             status_text = item.text(2) if item else ""
             if status_text:
@@ -103,26 +164,53 @@ class ModernTaskDelegate(QStyledItemDelegate):
                 is_active = status_text in ("Downloading", "Active", "Extracting...", "Solving CAPTCHA...", "Starting...")
                 is_paused = status_text in ("Paused", "Pausing...", "Cancelled")
 
-                if is_error:
-                    bg_color = QColor(239, 68, 68, 30)
-                    border_color = QColor(239, 68, 68, 140)
-                    text_color = QColor(252, 165, 165)
-                elif is_done:
-                    bg_color = QColor(34, 197, 94, 25)
-                    border_color = QColor(34, 197, 94, 140)
-                    text_color = QColor(134, 239, 172)
-                elif is_active:
-                    bg_color = QColor(14, 165, 233, 25)
-                    border_color = QColor(14, 165, 233, 140)
-                    text_color = QColor(125, 211, 252)
-                elif is_paused:
-                    bg_color = QColor(234, 179, 8, 20)
-                    border_color = QColor(234, 179, 8, 120)
-                    text_color = QColor(253, 224, 71)
+                # Detect if the app is currently running in dark or light mode based on window palette
+                window_bg = option.palette.color(QPalette.ColorRole.Window)
+                is_dark = window_bg.lightness() < 128
+
+                if is_dark:
+                    if is_error:
+                        bg_color = QColor(239, 68, 68, 30)
+                        border_color = QColor(239, 68, 68, 140)
+                        text_color = QColor(252, 165, 165)
+                    elif is_done:
+                        bg_color = QColor(34, 197, 94, 25)
+                        border_color = QColor(34, 197, 94, 140)
+                        text_color = QColor(134, 239, 172)
+                    elif is_active:
+                        bg_color = QColor(14, 165, 233, 25)
+                        border_color = QColor(14, 165, 233, 140)
+                        text_color = QColor(125, 211, 252)
+                    elif is_paused:
+                        bg_color = QColor(234, 179, 8, 20)
+                        border_color = QColor(234, 179, 8, 120)
+                        text_color = QColor(253, 224, 71)
+                    else:
+                        bg_color = QColor(100, 116, 139, 20)
+                        border_color = QColor(100, 116, 139, 80)
+                        text_color = QColor(203, 213, 225)
                 else:
-                    bg_color = QColor(100, 116, 139, 20)
-                    border_color = QColor(100, 116, 139, 80)
-                    text_color = QColor(203, 213, 225)
+                    # Light mode high-contrast text and solid legible backgrounds
+                    if is_error:
+                        bg_color = QColor(254, 242, 242)
+                        border_color = QColor(248, 113, 113)
+                        text_color = QColor(153, 27, 27)
+                    elif is_done:
+                        bg_color = QColor(240, 253, 244)
+                        border_color = QColor(74, 222, 128)
+                        text_color = QColor(22, 101, 52)
+                    elif is_active:
+                        bg_color = QColor(240, 249, 255)
+                        border_color = QColor(56, 189, 248)
+                        text_color = QColor(7, 89, 133)
+                    elif is_paused:
+                        bg_color = QColor(254, 252, 232)
+                        border_color = QColor(250, 204, 21)
+                        text_color = QColor(133, 77, 14)
+                    else:
+                        bg_color = QColor(248, 250, 252)
+                        border_color = QColor(203, 213, 225)
+                        text_color = QColor(51, 65, 85)
 
                 tag_height = 18
                 tag_y = rect.y() + (rect.height() - tag_height) / 2
@@ -155,9 +243,18 @@ class ModernTaskDelegate(QStyledItemDelegate):
                 bar_w = rect.width() - 8
                 bar_rect = QRectF(rect.x() + 4, bar_y, bar_w, bar_h)
 
+                window_bg = option.palette.color(QPalette.ColorRole.Window)
+                is_dark = window_bg.lightness() < 128
+
                 # Background trough
-                trough_color = QColor(28, 34, 44, 140)
-                painter.setPen(QPen(QColor(45, 55, 70, 120), 1))
+                if is_dark:
+                    trough_color = QColor(28, 34, 44, 140)
+                    trough_border = QColor(45, 55, 70, 120)
+                else:
+                    trough_color = QColor(226, 232, 240)
+                    trough_border = QColor(203, 213, 225)
+
+                painter.setPen(QPen(trough_border, 1))
                 painter.setBrush(QBrush(trough_color))
                 painter.drawRoundedRect(bar_rect, 2, 2)
 
@@ -169,12 +266,14 @@ class ModernTaskDelegate(QStyledItemDelegate):
                     is_error = "Error" in status or status == "Contains Errors"
                     is_done = status in ("Completed", "Extracted")
                     
-                    if is_error:
-                        g_start, g_end = QColor("#ef4444"), QColor("#b91c1c")
-                    elif is_done:
-                        g_start, g_end = QColor("#22c55e"), QColor("#15803d")
+                    # Progress bar stays standard neutral/blue fill, or emerald on complete
+                    if is_done:
+                        g_start, g_end = (QColor("#22c55e"), QColor("#15803d")) if is_dark else (QColor("#16a34a"), QColor("#15803d"))
+                    elif is_error:
+                        # Muted slate/amber fill on error so it doesn't scream red alongside the red error tag
+                        g_start, g_end = (QColor("#64748b"), QColor("#475569")) if is_dark else (QColor("#94a3b8"), QColor("#64748b"))
                     else:
-                        g_start, g_end = QColor("#38bdf8"), QColor("#1d4ed8")
+                        g_start, g_end = (QColor("#38bdf8"), QColor("#1d4ed8")) if is_dark else (QColor("#0284c7"), QColor("#0369a1"))
 
                     p_grad = QLinearGradient(fill_rect.topLeft(), fill_rect.bottomRight())
                     p_grad.setColorAt(0, g_start)
@@ -190,7 +289,14 @@ class ModernTaskDelegate(QStyledItemDelegate):
                 font.setPointSize(8)
                 font.setBold(True)
                 painter.setFont(font)
-                painter.setPen(QColor("#ffffff"))
+                
+                # Text contrast logic based on fill width
+                if fill_w > bar_w * 0.4:
+                    text_color = QColor("#ffffff")
+                else:
+                    text_color = QColor("#ffffff") if is_dark else QColor("#1e293b")
+                    
+                painter.setPen(text_color)
                 painter.drawText(bar_rect, Qt.AlignmentFlag.AlignCenter, prog_str)
                 painter.restore()
                 return
@@ -698,21 +804,23 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(16, 12, 16, 14)
-        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(10, 2, 10, 8)
+        main_layout.setSpacing(6)
 
-        # 1. TOP BENTO GRID: INGESTION HERO & TELEMETRY
+        # 1. TOP BENTO GRID: INGESTION HERO & STATUS
         top_grid = QHBoxLayout()
-        top_grid.setSpacing(12)
+        top_grid.setSpacing(8)
 
         # Left Bento Card: Target Directory & Quick Ingest
         left_card = QFrame()
         left_card.setObjectName("bentoCard")
+        left_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         left_layout = QVBoxLayout(left_card)
-        left_layout.setContentsMargins(14, 12, 14, 12)
-        left_layout.setSpacing(8)
+        left_layout.setContentsMargins(10, 6, 10, 6)
+        left_layout.setSpacing(6)
 
         left_header = QHBoxLayout()
+        left_header.setSpacing(6)
         left_title = QLabel("DOWNLOAD QUEUE INGEST")
         left_title.setObjectName("sectionTitle")
         left_header.addWidget(left_title)
@@ -726,11 +834,12 @@ class MainWindow(QMainWindow):
         self.text_links = QTextEdit()
         self.text_links.setPlaceholderText("Paste one or multiple FuckingFast URLs here...")
         self.text_links.setAcceptRichText(False)
-        self.text_links.setMaximumHeight(70)
+        self.text_links.setFixedHeight(77)
         self.text_links.installEventFilter(self)
         left_layout.addWidget(self.text_links)
 
         dir_row = QHBoxLayout()
+        dir_row.setSpacing(6)
         dir_label = QLabel("Save To:")
         dir_label.setObjectName("statLabel")
         dir_row.addWidget(dir_label)
@@ -751,28 +860,33 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(dir_row)
         top_grid.addWidget(left_card, stretch=65)
 
-        # Right Bento Card: Global Telemetry & Status Stats
+        # Right Bento Card: Global Status & Stats
         right_card = QFrame()
-        right_card.setObjectName("telemetryCard")
+        right_card.setObjectName("statusCard")
         right_layout = QVBoxLayout(right_card)
-        right_layout.setContentsMargins(14, 12, 14, 12)
-        right_layout.setSpacing(8)
+        right_layout.setContentsMargins(10, 6, 10, 6)
+        right_layout.setSpacing(4)
 
-        right_title = QLabel("LIVE TELEMETRY")
+        status_header = QHBoxLayout()
+        status_header.setSpacing(6)
+        right_title = QLabel("LIVE STATUS")
         right_title.setObjectName("sectionTitle")
-        right_layout.addWidget(right_title)
+        status_header.addWidget(right_title)
+        status_header.addStretch()
 
-        speed_row = QHBoxLayout()
         self.global_speed_label = QLabel("0.00 MB/s")
         self.global_speed_label.setObjectName("speedDisplay")
-        speed_row.addWidget(self.global_speed_label)
-        speed_row.addStretch()
-        right_layout.addLayout(speed_row)
+        status_header.addWidget(self.global_speed_label)
+        right_layout.addLayout(status_header)
+
+        self.speed_graph = LiveSpeedGraph(max_points=35)
+        self.speed_graph.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        right_layout.addWidget(self.speed_graph, stretch=1)
 
         stats_grid = QGridLayout()
-        stats_grid.setContentsMargins(0, 4, 0, 0)
-        stats_grid.setHorizontalSpacing(14)
-        stats_grid.setVerticalSpacing(2)
+        stats_grid.setContentsMargins(0, 2, 0, 0)
+        stats_grid.setHorizontalSpacing(10)
+        stats_grid.setVerticalSpacing(1)
 
         self.stat_active_val = QLabel("0")
         self.stat_active_val.setObjectName("statValue")
@@ -798,7 +912,7 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(stats_grid)
         top_grid.addWidget(right_card, stretch=35)
 
-        main_layout.addLayout(top_grid)
+        main_layout.addLayout(top_grid, stretch=0)
 
         # 2. MAIN QUEUE TREE
         self.tree = QTreeWidget()
@@ -843,7 +957,7 @@ class MainWindow(QMainWindow):
         
         self.tree.itemClicked.connect(self.handle_item_clicked)
         self.tree.itemSelectionChanged.connect(self.handle_item_selection_changed)
-        main_layout.addWidget(self.tree)
+        main_layout.addWidget(self.tree, stretch=1)
 
         # 3. ACTION CONTROLS BAR
         action_layout = QHBoxLayout()
@@ -1724,8 +1838,6 @@ class MainWindow(QMainWindow):
             task.tree_item.setData(0, Qt.ItemDataRole.UserRole, task.progress)
             task.tree_item.setData(1, Qt.ItemDataRole.UserRole, task.status)
                 
-        self.global_speed_label.setText(f"{global_speed:.2f} MB/s")
-
         # Update telemetry stat counters
         active_count = sum(1 for t in self.tasks if t.status in ("Downloading", "Starting...", "Solving CAPTCHA...", "Extracting..."))
         queued_count = sum(1 for t in self.tasks if t.status in ("Queued", "Pending"))
@@ -1733,6 +1845,12 @@ class MainWindow(QMainWindow):
         self.stat_active_val.setText(str(active_count))
         self.stat_queued_val.setText(str(queued_count))
         self.stat_done_val.setText(str(done_count))
+
+        self.global_speed_label.setText(f"{global_speed:.2f} MB/s")
+        if hasattr(self, 'speed_graph'):
+            has_active_dl = any(t.status == "Downloading" for t in self.tasks) or global_speed > 0
+            if has_active_dl:
+                self.speed_graph.add_sample(global_speed)
             
         # Update top-level batch folders
         for i in range(self.tree.topLevelItemCount()):

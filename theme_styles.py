@@ -24,7 +24,7 @@ QFrame#bentoCard:hover {
     border: 1px solid #2d3442;
 }
 
-QFrame#telemetryCard {
+QFrame#statusCard {
     background-color: #14171d;
     border: 1px solid #222731;
     border-radius: 3px;
@@ -227,11 +227,11 @@ QTreeWidget::item:selected {
 QHeaderView::section {
     background-color: #14171d;
     color: #7d8590;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.5px;
     text-transform: uppercase;
-    padding: 6px 8px;
+    padding: 5px 8px;
     border: none;
     border-bottom: 1px solid #222731;
 }
@@ -266,11 +266,11 @@ QMenuBar {
     background-color: #0d0f12;
     color: #c9d1d9;
     border-bottom: 1px solid #1c2128;
-    padding: 2px 4px;
+    padding: 0px 4px;
 }
 
 QMenuBar::item {
-    padding: 4px 8px;
+    padding: 2px 6px;
     border-radius: 2px;
 }
 
@@ -379,7 +379,7 @@ QFrame#bentoCard:hover {
     border: 1px solid #afb8c1;
 }
 
-QFrame#telemetryCard {
+QFrame#statusCard {
     background-color: #ffffff;
     border: 1px solid #d0d7de;
     border-radius: 3px;
@@ -571,11 +571,11 @@ QTreeWidget::item:selected {
 QHeaderView::section {
     background-color: #f6f8fa;
     color: #57606a;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.5px;
     text-transform: uppercase;
-    padding: 6px 8px;
+    padding: 5px 8px;
     border: none;
     border-bottom: 1px solid #d0d7de;
 }
@@ -610,11 +610,11 @@ QMenuBar {
     background-color: #f6f8fa;
     color: #24292f;
     border-bottom: 1px solid #d0d7de;
-    padding: 2px 4px;
+    padding: 0px 4px;
 }
 
 QMenuBar::item {
-    padding: 4px 8px;
+    padding: 2px 6px;
     border-radius: 2px;
 }
 
