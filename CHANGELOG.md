@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixes & Improvements
+* **Responsive Action Buttons**: The action buttons (Add, Start/Resume, Pause, Cancel, Retry, Force Redownload, Copy Error Details, Delete) now show hover, pressed, and disabled states, so a click gives immediate visual feedback instead of looking unresponsive. Button colors are unchanged.
+
 ## [v1.4.0] - 2026-08-03
 
 ### New Features
