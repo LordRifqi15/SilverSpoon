@@ -24,10 +24,10 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItem, QHeaderView, QFileDialog, QAbstractItemView,
     QCheckBox, QDialog, QFormLayout, QSpinBox, QDialogButtonBox,
     QMessageBox, QInputDialog, QSplashScreen, QMenu, QStyledItemDelegate,
-    QTimeEdit, QDateEdit, QRadioButton, QButtonGroup, QGroupBox
+    QDateEdit, QRadioButton, QButtonGroup, QGroupBox, QComboBox
 )
 from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QPixmap, QColor, QBrush
-from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QTime, QDate
+from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QDate
 
 class ProgressBarDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
@@ -298,28 +298,63 @@ class SettingsDialog(QDialog):
         }
 
 
-class OffPeakScheduleDialog(QDialog):
-    """Configure a recurring (or one-off) off-peak download window."""
+class TimePicker(QWidget):
+    """Hour / minute / AM-PM dropdowns. Reads and writes 24-hour 'HH:mm'
+    internally so the stored schedule format is unchanged; the user sees a
+    clear 12-hour time with an explicit AM/PM instead of a bare spinbox."""
 
-    def __init__(self, schedule, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Off-Peak Schedule")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.hour = QComboBox()
+        self.hour.addItems([f"{h:02d}" for h in range(1, 13)])
+        self.minute = QComboBox()
+        self.minute.addItems([f"{m:02d}" for m in range(60)])
+        self.ampm = QComboBox()
+        self.ampm.addItems(["AM", "PM"])
+        row.addWidget(self.hour)
+        row.addWidget(QLabel(":"))
+        row.addWidget(self.minute)
+        row.addWidget(self.ampm)
+        row.addStretch()
+
+    def set_hhmm(self, value):
+        h12, m, ampm = offpeak.split_12h(value)
+        self.hour.setCurrentText(f"{h12:02d}")
+        self.minute.setCurrentText(f"{m:02d}")
+        self.ampm.setCurrentText(ampm)
+
+    def get_hhmm(self):
+        return offpeak.join_24h(int(self.hour.currentText()),
+                                int(self.minute.currentText()),
+                                self.ampm.currentText())
+
+
+class DownloadSchedulerDialog(QDialog):
+    """Configure a recurring (or one-off) download window, either for the whole
+    queue or for a specific set of selected downloads (scope_label)."""
+
+    def __init__(self, schedule, scope_label="entire queue", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Download Scheduler")
         self.setMinimumWidth(420)
         layout = QVBoxLayout(self)
 
-        self.enabled_cb = QCheckBox("Enable scheduled off-peak downloads")
+        scope = QLabel(f"Scheduling: <b>{scope_label}</b>")
+        layout.addWidget(scope)
+
+        self.enabled_cb = QCheckBox("Enable scheduled downloads")
         self.enabled_cb.setChecked(schedule.get("enabled", False))
         layout.addWidget(self.enabled_cb)
 
         # --- Window times ---
         times_box = QGroupBox("Window")
         times_form = QFormLayout(times_box)
-        self.start_edit = QTimeEdit()
-        self.start_edit.setDisplayFormat("HH:mm")
-        self.start_edit.setTime(QTime.fromString(schedule.get("start", "02:00"), "HH:mm"))
-        self.end_edit = QTimeEdit()
-        self.end_edit.setDisplayFormat("HH:mm")
-        self.end_edit.setTime(QTime.fromString(schedule.get("end", "06:00"), "HH:mm"))
+        self.start_edit = TimePicker()
+        self.start_edit.set_hhmm(schedule.get("start", "02:00"))
+        self.end_edit = TimePicker()
+        self.end_edit.set_hhmm(schedule.get("end", "06:00"))
         times_form.addRow("Start:", self.start_edit)
         times_form.addRow("End:", self.end_edit)
         times_form.addRow(QLabel("<i>End before start = window crosses midnight.</i>"))
@@ -387,8 +422,8 @@ class OffPeakScheduleDialog(QDialog):
     def get_schedule(self):
         return {
             "enabled": self.enabled_cb.isChecked(),
-            "start": self.start_edit.time().toString("HH:mm"),
-            "end": self.end_edit.time().toString("HH:mm"),
+            "start": self.start_edit.get_hhmm(),
+            "end": self.end_edit.get_hhmm(),
             "recurrence": "once" if self.once_radio.isChecked() else "weekly",
             "days": [i for i, cb in enumerate(self.day_checks) if cb.isChecked()],
             "date": self.date_edit.date().toString("yyyy-MM-dd"),
@@ -530,6 +565,7 @@ class MainWindow(QMainWindow):
         self.schedule = self.settings.get("schedule") or offpeak.default_schedule()
         self.offpeak_controller = offpeak.OffPeakScheduler(self.schedule)
         self.offpeak_session = None
+        self.offpeak_session_links = None
         self.sched_timer = QTimer()
         self.sched_timer.timeout.connect(self.scheduler_tick)
         self.sched_timer.start(30_000)
@@ -561,8 +597,8 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self.open_settings_dialog)
         file_menu.addAction(settings_action)
 
-        schedule_action = QAction("Off-&Peak Schedule...", self)
-        schedule_action.triggered.connect(self.open_offpeak_dialog)
+        schedule_action = QAction("&Download Scheduler...", self)
+        schedule_action.triggered.connect(self.open_queue_scheduler)
         file_menu.addAction(schedule_action)
 
         file_menu.addSeparator()
@@ -800,6 +836,8 @@ class MainWindow(QMainWindow):
         menu.addAction("[R] Retry", self.retry_selected)
         menu.addAction("[F] Force Redownload", self.force_redownload_selected)
         menu.addAction("Copy Error Details", self.copy_selected_error_log)
+        menu.addSeparator()
+        menu.addAction("Schedule download at specific interval", self.schedule_selected_downloads)
         menu.addSeparator()
         menu.addAction("Delete", self.delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(position))
@@ -1186,13 +1224,31 @@ class MainWindow(QMainWindow):
             self.extract_checkbox.setChecked(self.settings.get("extract_after_download", False))
 
     # ------------------------------------------------------------------
-    # Off-peak scheduling
+    # Download scheduling
     # ------------------------------------------------------------------
-    def open_offpeak_dialog(self):
-        dialog = OffPeakScheduleDialog(self.schedule, self)
+    def open_queue_scheduler(self):
+        """File menu: schedule the whole queue."""
+        self._open_scheduler(targets=None, scope_label="entire queue")
+
+    def schedule_selected_downloads(self):
+        """Right-click: schedule only the selected download(s)."""
+        tasks = self.get_selected_tasks()
+        if not tasks:
+            QMessageBox.information(self, "No Selection",
+                                    "Select one or more downloads to schedule.")
+            return
+        links = sorted({t.link for t in tasks})
+        label = (f"{len(tasks)} selected download(s)" if len(links) != 1
+                 else os.path.basename(tasks[0].filename))
+        self._open_scheduler(targets=links, scope_label=label)
+
+    def _open_scheduler(self, targets, scope_label):
+        dialog = DownloadSchedulerDialog(self.schedule, scope_label, self)
         if not dialog.exec():
             return
         self.schedule = dialog.get_schedule()
+        # None => whole queue; a list of links => only those downloads.
+        self.schedule["targets"] = targets
         self.settings["schedule"] = self.schedule
         save_settings(self.settings)
         self.offpeak_controller.update(self.schedule)
@@ -1205,6 +1261,14 @@ class MainWindow(QMainWindow):
             (QMessageBox.information if ok else QMessageBox.warning)(self, title, msg)
         else:
             offpeak.unregister_wake_task()
+
+    def _scheduled_tasks(self):
+        """Tasks the active schedule targets: all, or only the chosen links."""
+        targets = self.schedule.get("targets")
+        if not targets:
+            return list(self.tasks)
+        targets = set(targets)
+        return [t for t in self.tasks if t.link in targets]
 
     def _launch_command(self):
         """Executable + argument string used by the wake task to relaunch the app."""
@@ -1240,16 +1304,18 @@ class MainWindow(QMainWindow):
         if self.schedule.get("keep_awake", True):
             offpeak.prevent_sleep()
 
+        scheduled = self._scheduled_tasks()
         session = offpeak.OffPeakSession(now)
-        for task in self.tasks:
+        for task in scheduled:
             key = self._task_key(task)
             session.snapshot[key] = task.downloaded_bytes
             if task.status in ("Completed", "Extracted"):
                 session.completed_before.add(key)
         self.offpeak_session = session
+        self.offpeak_session_links = {t.link for t in scheduled}
 
         started = 0
-        for task in self.tasks:
+        for task in scheduled:
             if task.status in ("Queued", "Paused", "Cancelled", "Error",
                                "CAPTCHA Timeout"):
                 task.status = "Pending"
@@ -1257,11 +1323,15 @@ class MainWindow(QMainWindow):
                 task.cancel_flag = False
                 task.pause_flag = False
                 started += 1
-        logging.info("Off-peak window opened; queued %d task(s).", started)
+        logging.info("Download window opened; queued %d task(s).", started)
 
     def _offpeak_close(self, now):
         offpeak.allow_sleep()
+        # Pause only the tasks this window was responsible for.
+        links = getattr(self, "offpeak_session_links", None)
         for task in self.tasks:
+            if links is not None and task.link not in links:
+                continue
             if task.status in ("Downloading", "Pending", "Starting..."):
                 task.pause_flag = True
                 task.status = "Pausing..." if task.status == "Downloading" else "Paused"
@@ -1271,19 +1341,20 @@ class MainWindow(QMainWindow):
         if session is None:
             return
 
-        bytes_now = {self._task_key(t): t.downloaded_bytes for t in self.tasks}
-        completed_now = {self._task_key(t) for t in self.tasks
+        scheduled = [t for t in self.tasks if links is None or t.link in links]
+        bytes_now = {self._task_key(t): t.downloaded_bytes for t in scheduled}
+        completed_now = {self._task_key(t) for t in scheduled
                          if t.status in ("Completed", "Extracted")}
         summary = offpeak.summarize(session, now, bytes_now, completed_now)
         offpeak.append_report(summary, offpeak.get_report_path())
-        logging.info("Off-peak window closed; %s", summary)
+        logging.info("Scheduled download window closed; %s", summary)
         self._show_offpeak_summary(summary)
 
     def _show_offpeak_summary(self, summary):
         gb = summary["bytes_downloaded"] / (1024 ** 3)
         mins = summary["duration_seconds"] / 60
         text = (
-            f"<b>Off-peak window finished.</b><br><br>"
+            f"<b>Scheduled download window finished.</b><br><br>"
             f"Files completed: <b>{summary['files_completed']}</b><br>"
             f"Downloaded: <b>{gb:.2f} GB</b><br>"
             f"Active duration: <b>{mins:.0f} min</b><br>"
@@ -1291,7 +1362,7 @@ class MainWindow(QMainWindow):
             f"Peak speed: <b>{summary['peak_speed_mbps']:.2f} MB/s</b><br><br>"
             f"<i>Report appended to {offpeak.get_report_path()}</i>"
         )
-        QMessageBox.information(self, "Off-Peak Summary", text)
+        QMessageBox.information(self, "Download Scheduler — Summary", text)
 
     def browse_dir(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Save Directory", self.dir_input.text())

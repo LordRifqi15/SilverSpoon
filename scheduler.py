@@ -39,6 +39,21 @@ def parse_hhmm(value):
     return dt.time(int(h), int(m))
 
 
+def split_12h(hhmm):
+    """'HH:mm' (24h) -> (hour_1_12, minute, 'AM'|'PM'). 00:xx->12 AM, 12:xx->12 PM."""
+    h, m = (int(x) for x in hhmm.split(":"))
+    ampm = "AM" if h < 12 else "PM"
+    return (h % 12 or 12), m, ampm
+
+
+def join_24h(hour_12, minute, ampm):
+    """(hour_1_12, minute, 'AM'|'PM') -> 'HH:mm' (24h)."""
+    h = hour_12 % 12
+    if ampm == "PM":
+        h += 12
+    return f"{h:02d}:{minute:02d}"
+
+
 def _day_active(start_date, sched):
     if sched.get("recurrence") == "once":
         return start_date.isoformat() == sched.get("date")

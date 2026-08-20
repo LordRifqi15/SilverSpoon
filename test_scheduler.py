@@ -63,6 +63,16 @@ def test_once_schedule():
     assert sc.is_within_window(dt.datetime(2026, 8, 22, 3, 0), s) is False
 
 
+def test_12h_24h_roundtrip():
+    for hhmm in ["00:00", "00:30", "02:00", "11:59", "12:00",
+                 "12:45", "13:05", "23:59"]:
+        h12, m, ap = sc.split_12h(hhmm)
+        assert sc.join_24h(h12, m, ap) == hhmm, hhmm
+    # the two easy-to-get-wrong noon/midnight cases
+    assert sc.split_12h("00:15") == (12, 15, "AM")
+    assert sc.split_12h("12:15") == (12, 15, "PM")
+
+
 def test_disabled_never_matches():
     s = {"enabled": False, "start": "00:00", "end": "23:59",
          "recurrence": "weekly", "days": list(range(7))}
