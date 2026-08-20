@@ -59,7 +59,7 @@ class ProgressBarDelegate(QStyledItemDelegate):
 
 from curl_cffi import requests as curl_requests
 from cf_turnstile import TurnstileSolver
-from PyQt6.QtCore import QMetaObject, Q_ARG
+from PyQt6.QtCore import QMetaObject, Q_ARG, pyqtSignal
 from update_logic import UpdateCheckerThread, UpdateDownloaderDialog
 import datetime as _dt
 import scheduler as offpeak
@@ -413,6 +413,16 @@ class DownloadSchedulerDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def accept(self):
+        # Guard: an enabled weekly schedule with no weekday ticked would never
+        # fire. Force the user to pick a day (or switch to "Run once").
+        if (self.enabled_cb.isChecked() and self.weekly_radio.isChecked()
+                and not any(cb.isChecked() for cb in self.day_checks)):
+            QMessageBox.warning(self, "No days selected",
+                                "Pick at least one day, or choose Run once.")
+            return
+        super().accept()
+
     def _sync_recurrence_enabled(self, *args):
         weekly = self.weekly_radio.isChecked()
         for cb in self.day_checks:
@@ -518,6 +528,10 @@ def save_history(tasks):
         print(f"Failed to save history: {e}")
 
 class MainWindow(QMainWindow):
+    # Emitted from the connectivity-probe thread once a window-open probe
+    # succeeds; carries `now` and is handled on the GUI thread.
+    _offpeak_open_ready = pyqtSignal(object)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SilverSpoon - UI (PyQt6)")
@@ -566,12 +580,16 @@ class MainWindow(QMainWindow):
         self.offpeak_controller = offpeak.OffPeakScheduler(self.schedule)
         self.offpeak_session = None
         self.offpeak_session_links = None
+        self._offpeak_probing = False
+        self._offpeak_open_ready.connect(self._do_offpeak_open)
         self.sched_timer = QTimer()
         self.sched_timer.timeout.connect(self.scheduler_tick)
         self.sched_timer.start(30_000)
         # Kick a first poll shortly after launch so a wake-launched app (or one
         # opened mid-window) starts downloading without waiting a full interval.
         QTimer.singleShot(1500, self.scheduler_tick)
+
+        self._refresh_schedule_indicator()
 
     def closeEvent(self, event):
         save_history(self.tasks)
@@ -666,6 +684,11 @@ class MainWindow(QMainWindow):
         self.global_speed_label = QLabel("Global Speed: 0.00 MB/s")
         self.global_speed_label.setStyleSheet("font-weight: bold; color: #2ecc71;")
         stats_layout.addWidget(self.global_speed_label)
+
+        self.schedule_indicator_label = QLabel("")
+        self.schedule_indicator_label.setStyleSheet("font-weight: bold; color: #f39c12;")
+        self.schedule_indicator_label.setVisible(False)
+        stats_layout.addWidget(self.schedule_indicator_label)
         main_layout.addLayout(stats_layout)
         
         self.text_links = QTextEdit()
@@ -1262,6 +1285,14 @@ class MainWindow(QMainWindow):
         else:
             offpeak.unregister_wake_task()
 
+        self._refresh_schedule_indicator()
+
+    def _refresh_schedule_indicator(self):
+        """Update the armed-schedule label; hide it when nothing is scheduled."""
+        text = offpeak.describe_schedule(self.schedule)
+        self.schedule_indicator_label.setText(f"⏰ {text}")
+        self.schedule_indicator_label.setVisible(bool(text))
+
     def _scheduled_tasks(self):
         """Tasks the active schedule targets: all, or only the chosen links."""
         targets = self.schedule.get("targets")
@@ -1294,13 +1325,28 @@ class MainWindow(QMainWindow):
             self._offpeak_close(now)
 
     def _offpeak_open(self, now):
-        if not offpeak.check_connection():
-            # No connection yet: the next tick (still inside the window) will
-            # re-fire "open" and retry.
-            self.offpeak_controller.cancel_open()
-            logging.warning("Off-peak: no internet connection at window open; will retry.")
+        # Probe connectivity off the GUI thread (~1.5s) so the poll timer never
+        # stalls the UI. On success the probe emits _offpeak_open_ready, whose
+        # GUI-thread slot (_do_offpeak_open) does the Qt/task work.
+        if self._offpeak_probing:
             return
+        self._offpeak_probing = True
 
+        def probe():
+            try:
+                if offpeak.check_connection():
+                    self._offpeak_open_ready.emit(now)
+                else:
+                    # No connection yet: the next tick (still inside the window)
+                    # will re-fire "open" and retry.
+                    self.offpeak_controller.cancel_open()
+                    logging.warning("Off-peak: no internet connection at window open; will retry.")
+            finally:
+                self._offpeak_probing = False
+
+        threading.Thread(target=probe, daemon=True).start()
+
+    def _do_offpeak_open(self, now):
         if self.schedule.get("keep_awake", True):
             offpeak.prevent_sleep()
 
