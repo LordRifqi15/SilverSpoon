@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QInputDialog, QSplashScreen, QMenu, QStyledItemDelegate,
     QDateEdit, QRadioButton, QButtonGroup, QGroupBox, QComboBox
 )
-from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QPixmap, QColor, QBrush
+from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QPixmap, QColor, QBrush, QKeySequence
 from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QDate
 
 class ProgressBarDelegate(QStyledItemDelegate):
@@ -67,7 +67,6 @@ from ui_style import button_style
 
 CURRENT_VERSION = "v1.4.0"
 GITHUB_REPO = "billysams21/SilverSpoon"
-OLD_EXE_CLEANUP_MARKER_SUFFIX = ".delete_old_on_start"
 
 def get_settings_path():
     return os.path.expanduser("~/.silverspoon_settings.json")
@@ -696,6 +695,11 @@ class MainWindow(QMainWindow):
         self.text_links = QTextEdit()
         self.text_links.setAcceptRichText(False)
         self.text_links.setMaximumHeight(80)
+        # Override the paste event of QTextEdit or handle it through shortcuts if needed.
+        # However, QTextEdit natively handles pastes. To intercept rich text paste, 
+        # we can either subclass QTextEdit or just install an event filter.
+        # Let's install an event filter on text_links to intercept pastes.
+        self.text_links.installEventFilter(self)
         main_layout.addWidget(self.text_links)
         
         add_btn = QPushButton("Add Links to Queue")
@@ -813,7 +817,11 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(event)
 
     def eventFilter(self, source, event):
-        if source == self.tree and event.type() == QEvent.Type.KeyPress:
+        if source == self.text_links and event.type() == QEvent.Type.KeyPress:
+            if event.matches(QKeySequence.StandardKey.Paste):
+                self.paste_from_clipboard()
+                return True
+        if hasattr(self, 'tree') and source == self.tree and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 self.delete_selected()
                 return True
@@ -895,10 +903,8 @@ class MainWindow(QMainWindow):
             if sys.platform == 'win32':
                 os.startfile(folder_path)
             elif sys.platform == 'darwin':
-                import subprocess
                 subprocess.Popen(['open', folder_path])
             else:
-                import subprocess
                 subprocess.Popen(['xdg-open', folder_path])
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not open folder:\n{e}")
@@ -1119,18 +1125,31 @@ class MainWindow(QMainWindow):
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(extract_dir)
                     
-                new_exe_path = None
+                new_app_dir = None
                 for root, _, files in os.walk(extract_dir):
-                    for file in files:
-                        if file.lower() == "silverspoon.exe":
-                            new_exe_path = os.path.join(root, file)
-                            break
-                            
-                if not new_exe_path:
+                    if any(file.lower() == "silverspoon.exe" for file in files):
+                        new_app_dir = root
+                        break
+
+                if not new_app_dir:
                     raise Exception("Could not find SilverSpoon.exe inside the downloaded zip.")
+
+                internal_dir = os.path.join(new_app_dir, "_internal")
+                has_curl_metadata = os.path.isdir(internal_dir) and any(
+                    entry.startswith("curl_cffi-")
+                    and entry.endswith(".dist-info")
+                    and os.path.isfile(os.path.join(internal_dir, entry, "METADATA"))
+                    for entry in os.listdir(internal_dir)
+                )
+                if not has_curl_metadata:
+                    raise Exception(
+                        "The downloaded release is incomplete: curl_cffi metadata is missing. "
+                        "Please download the complete SilverSpoon folder ZIP."
+                    )
                     
                 current_exe = sys.executable
                 current_exe_name = os.path.basename(current_exe)
+                current_app_dir = os.path.dirname(current_exe)
                 
                 if not current_exe_name.lower().startswith("silverspoon"):
                     msg_box = QMessageBox(self)
@@ -1153,79 +1172,55 @@ class MainWindow(QMainWindow):
                         
                     return
                 
-                old_exe_path = current_exe + ".old"
-
-                if os.path.exists(old_exe_path):
-                    try:
-                        os.remove(old_exe_path)
-                    except Exception:
-                        pass
-                
-                os.rename(current_exe, old_exe_path)
-
-                copy_success = False
-                for _ in range(10):
-                    try:
-                        shutil.copy2(new_exe_path, current_exe)
-                        copy_success = True
-                        break
-                    except PermissionError:
-                        time.sleep(0.5)
-                        
-                if not copy_success:
-                    os.rename(old_exe_path, current_exe)
-                    raise Exception("Could not copy the new executable. It might be locked by your Antivirus.")
-
-                try:
-                    shutil.rmtree(extract_dir, ignore_errors=True)
-                    if os.path.exists(zip_path):
-                        os.remove(zip_path)
-                except Exception:
-                    pass
-
-                # Keep the renamed executable as a rollback copy unless the user
-                # explicitly chooses to remove it. The marker is consumed by the
-                # replacement app only after it has started successfully.
-                delete_old_exe = QMessageBox.question(
-                    self,
-                    "Remove Previous Version?",
-                    "The previous version is saved as:\n"
-                    f"{old_exe_path}\n\n"
-                    "Delete this backup after the new version closes normally?\n"
-                    "It will be kept if the replacement cannot start.\n"
-                    "Choose No to keep it for rollback.",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                ) == QMessageBox.StandardButton.Yes
-                cleanup_marker = current_exe + OLD_EXE_CLEANUP_MARKER_SUFFIX
-                if delete_old_exe:
-                    with open(cleanup_marker, "w", encoding="utf-8") as marker:
-                        marker.write("Delete the previous executable after a successful restart.\n")
-                elif os.path.exists(cleanup_marker):
-                    os.remove(cleanup_marker)
-
                 save_history(self.tasks)
                 save_settings(self.settings)
 
-                bat_path = os.path.join(tempfile.gettempdir(), f"silverspoon_restart_{int(time.time())}.bat")
+                bat_path = os.path.join(tempfile.gettempdir(), f"silverspoon_update_{int(time.time())}.bat")
+                backup_app_dir = current_app_dir + ".previous"
+                success_marker = os.path.join(tempfile.gettempdir(), f"silverspoon_update_success_{int(time.time())}.marker")
                 with open(bat_path, 'w') as bat:
                     bat.write('@echo off\n')
+                    bat.write('echo Updating SilverSpoon...\n')
                     bat.write('set PYINSTALLER_RESET_ENVIRONMENT=1\n')
                     bat.write('set _MEIPASS=\n')
                     bat.write('set _MEIPASS2=\n')
-                    bat.write('ping 127.0.0.1 -n 4 > nul\n')
-                    bat.write(f'start "" /wait "{current_exe}"\n')
-                    bat.write('if errorlevel 1 goto cleanup\n')
-                    bat.write(f'if exist "{cleanup_marker}" del /f /q "{old_exe_path}" > nul 2>&1\n')
-                    bat.write(f'if not exist "{old_exe_path}" if exist "{cleanup_marker}" del /q "{cleanup_marker}" > nul 2>&1\n')
+                    bat.write(f'del /f /q "{success_marker}" > nul 2>&1\n')
+                    bat.write(f'if exist "{backup_app_dir}" rmdir /s /q "{backup_app_dir}"\n')
+                    bat.write(':wait_for_exit\n')
+                    bat.write(f'move "{current_app_dir}" "{backup_app_dir}" > nul 2>&1\n')
+                    bat.write('if not errorlevel 1 goto install\n')
+                    bat.write('timeout /t 1 /nobreak > nul\n')
+                    bat.write('goto wait_for_exit\n')
+                    bat.write(':install\n')
+                    bat.write(f'robocopy "{new_app_dir}" "{current_app_dir}" /E /COPY:DAT /R:3 /W:1 > nul\n')
+                    bat.write('if errorlevel 8 goto rollback\n')
+                    bat.write(f'set "SILVERSPOON_UPDATE_SUCCESS_MARKER={success_marker}"\n')
+                    bat.write(f'start "" "{current_exe}"\n')
+                    bat.write('for /l %%i in (1,1,30) do (\n')
+                    bat.write(f'    if exist "{success_marker}" goto success\n')
+                    bat.write('    timeout /t 1 /nobreak > nul\n')
+                    bat.write(')\n')
+                    bat.write(':rollback\n')
+                    bat.write(f'if exist "{current_app_dir}" rmdir /s /q "{current_app_dir}"\n')
+                    bat.write(f'move "{backup_app_dir}" "{current_app_dir}" > nul 2>&1\n')
+                    bat.write(f'if exist "{current_exe}" start "" "{current_exe}"\n')
+                    bat.write('goto cleanup\n')
+                    bat.write(':success\n')
+                    bat.write(f'rmdir /s /q "{backup_app_dir}" > nul 2>&1\n')
                     bat.write(':cleanup\n')
-                    bat.write(f'del "%~f0"\n')
+                    bat.write(f'del /f /q "{success_marker}" > nul 2>&1\n')
+                    bat.write(f'rmdir /s /q "{extract_dir}" > nul 2>&1\n')
+                    bat.write(f'del /q "{zip_path}" > nul 2>&1\n')
+                    bat.write('del "%~f0"\n')
                 
                 CREATE_NO_WINDOW = 0x08000000
                 subprocess.Popen(
-                    [bat_path],
+                    ["cmd.exe", "/c", bat_path],
                     creationflags=CREATE_NO_WINDOW,
-                    close_fds=True
+                    close_fds=True,
+                    # The updater must not retain the app directory as its working directory,
+                    # or Windows will prevent the batch file from renaming that directory.
+                    cwd=tempfile.gettempdir(),
                 )
                 
                 QApplication.quit()
@@ -1419,7 +1414,23 @@ class MainWindow(QMainWindow):
 
     def paste_from_clipboard(self):
         clipboard = QApplication.clipboard()
-        text = clipboard.text()
+        mime_data = clipboard.mimeData()
+        
+        text = ""
+        if mime_data.hasHtml():
+            # If the clipboard contains HTML, extract href links
+            html = mime_data.html()
+            # Simple regex to find hrefs
+            import re
+            links = re.findall(r'href=[\'"]?([^\'" >]+)', html)
+            if links:
+                # Filter out anything that clearly isn't an http link
+                text = "\n".join(link for link in links if link.startswith('http'))
+        
+        # Fallback to plain text if no links were found in HTML or if it's just plain text
+        if not text and mime_data.hasText():
+            text = mime_data.text()
+
         if text:
             current_text = self.text_links.toPlainText()
             if current_text.strip():
@@ -2010,7 +2021,6 @@ class MainWindow(QMainWindow):
                     extractor_type = '7z'
                     base_cmd = bundled_7z
             else:
-                import shutil
                 if shutil.which('7z'):
                     extractor_type = '7z'
                     base_cmd = '7z'
@@ -2313,6 +2323,13 @@ if __name__ == "__main__":
     
     # Setup window and load things while splash is visible
     window = MainWindow()
+    update_success_marker = os.environ.get("SILVERSPOON_UPDATE_SUCCESS_MARKER")
+    if update_success_marker:
+        try:
+            with open(update_success_marker, "w", encoding="utf-8") as marker:
+                marker.write("SilverSpoon started successfully.\n")
+        except OSError:
+            pass
     
     # After 1 second (1000 ms), close splash and show main window
     QTimer.singleShot(1000, splash.close)
