@@ -83,6 +83,11 @@ class OffPeakScheduler:
     def update(self, sched):
         self.sched = sched
 
+    def cancel_open(self):
+        """Undo an 'open' edge that couldn't be honoured (e.g. no connection),
+        so the next poll still inside the window re-fires 'open' to retry."""
+        self._active = False
+
     def poll(self, now):
         inside = is_within_window(now, self.sched)
         if inside and not self._active:

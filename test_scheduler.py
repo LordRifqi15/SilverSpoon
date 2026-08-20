@@ -81,6 +81,17 @@ def test_scheduler_edges():
     assert sch.poll(D(hh=8)) is None            # outside again
 
 
+def test_cancel_open_refires_next_poll():
+    # Simulates "opened but no connection": cancel_open() must let the next
+    # in-window poll re-fire "open" so the retry path works.
+    s = {"enabled": True, "start": "02:00", "end": "06:00",
+         "recurrence": "weekly", "days": list(range(7))}
+    sch = sc.OffPeakScheduler(s)
+    assert sch.poll(D(hh=3)) == "open"
+    sch.cancel_open()
+    assert sch.poll(D(hh=3, mm=30)) == "open"   # re-fires instead of None
+
+
 def test_scheduler_autostart_on_launch_inside_window():
     # App launched already inside the window -> first poll must fire "open".
     s = {"enabled": True, "start": "02:00", "end": "06:00",

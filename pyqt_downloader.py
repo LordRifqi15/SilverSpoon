@@ -1229,9 +1229,9 @@ class MainWindow(QMainWindow):
 
     def _offpeak_open(self, now):
         if not offpeak.check_connection():
-            # No connection yet: drop the active flag so the next tick (still
-            # inside the window) re-fires "open" and retries.
-            self.offpeak_controller._active = False
+            # No connection yet: the next tick (still inside the window) will
+            # re-fire "open" and retry.
+            self.offpeak_controller.cancel_open()
             logging.warning("Off-peak: no internet connection at window open; will retry.")
             return
 
