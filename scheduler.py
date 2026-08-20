@@ -54,6 +54,37 @@ def join_24h(hour_12, minute, ampm):
     return f"{h:02d}:{minute:02d}"
 
 
+def _fmt_time(hhmm):
+    """'HH:mm' (24h) -> '2:00 AM' style (no leading zero on the hour)."""
+    h, m, ampm = split_12h(hhmm)
+    return f"{h}:{m:02d} {ampm}"
+
+
+def describe_schedule(sched):
+    """One-line human summary of an armed schedule; '' when not enabled.
+
+    Examples: 'Daily 2:00 AM-6:00 AM', 'Mon, Wed, Fri 11:00 PM-5:00 AM',
+    'Once on 2026-08-25, 2:00 AM-6:00 AM'. Appends ' (N downloads)' when the
+    schedule targets a specific non-empty list of downloads.
+    """
+    if not sched.get("enabled"):
+        return ""
+    window = f"{_fmt_time(sched['start'])}–{_fmt_time(sched['end'])}"
+    if sched.get("recurrence") == "once":
+        prefix = f"Once on {sched.get('date') or ''}, "
+    else:
+        days = sorted(set(sched["days"] if "days" in sched else range(7)))
+        if len(days) == 7:
+            prefix = "Daily "
+        else:
+            prefix = ", ".join(WEEKDAY_NAMES[d][:3] for d in days) + " "
+    text = f"{prefix}{window}"
+    targets = sched.get("targets")
+    if isinstance(targets, list) and targets:
+        text += f" ({len(targets)} downloads)"
+    return text
+
+
 def _day_active(start_date, sched):
     if sched.get("recurrence") == "once":
         return start_date.isoformat() == sched.get("date")

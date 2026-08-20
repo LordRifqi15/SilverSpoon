@@ -146,6 +146,43 @@ def test_summary_metrics():
     assert abs(summ["avg_speed_mbps"] - expected_avg) < 1e-6
 
 
+# ---- describe_schedule -----------------------------------------------------
+def test_describe_disabled_is_empty():
+    s = {"enabled": False, "start": "02:00", "end": "06:00",
+         "recurrence": "weekly", "days": list(range(7))}
+    assert sc.describe_schedule(s) == ""
+
+
+def test_describe_daily():
+    s = {"enabled": True, "start": "02:00", "end": "06:00",
+         "recurrence": "weekly", "days": list(range(7))}
+    assert sc.describe_schedule(s) == "Daily 2:00 AM–6:00 AM"
+
+
+def test_describe_specific_days():
+    s = {"enabled": True, "start": "23:00", "end": "05:00",
+         "recurrence": "weekly", "days": [0, 2, 4]}
+    assert sc.describe_schedule(s) == "Mon, Wed, Fri 11:00 PM–5:00 AM"
+
+
+def test_describe_once():
+    s = {"enabled": True, "start": "02:00", "end": "06:00",
+         "recurrence": "once", "date": "2026-08-25"}
+    assert sc.describe_schedule(s) == "Once on 2026-08-25, 2:00 AM–6:00 AM"
+
+
+def test_describe_targets_suffix():
+    s = {"enabled": True, "start": "02:00", "end": "06:00",
+         "recurrence": "weekly", "days": list(range(7)),
+         "targets": ["a", "b", "c"]}
+    assert sc.describe_schedule(s) == "Daily 2:00 AM–6:00 AM (3 downloads)"
+    # None / empty targets add no suffix
+    s["targets"] = None
+    assert sc.describe_schedule(s) == "Daily 2:00 AM–6:00 AM"
+    s["targets"] = []
+    assert sc.describe_schedule(s) == "Daily 2:00 AM–6:00 AM"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
