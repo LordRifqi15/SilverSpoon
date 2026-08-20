@@ -76,6 +76,8 @@ Queue your links, then let SilverSpoon download them during off-peak hours autom
 6. Click **OK**. When the window opens, SilverSpoon verifies your connection and starts the queue; when it closes, it pauses everything and shows a summary (also saved to `~/.silverspoon_offpeak_report.jsonl`).
 
 > **Note:** The wake timer is Windows-only. On Linux/macOS the app still auto-starts and keeps the display awake while it is running, but it cannot power the machine on from a fully off state.
+>
+> **When using the wake timer, close SilverSpoon (or let the PC sleep) beforehand** so the timer launches a single fresh instance. SilverSpoon does not yet guard against multiple instances, and running two copies against the same queue can corrupt partially-downloaded files.
 
 ### Using the CLI
 If you prefer the command line:
