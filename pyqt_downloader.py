@@ -109,7 +109,7 @@ def save_settings(settings):
         with open(settings_path, 'w', encoding='utf-8') as f:
             json.dump(settings, f, indent=4)
     except Exception as e:
-        print(f"Failed to save settings: {e}")
+        logging.error("Failed to save settings: %s", e)
 
 def format_error_message(error, max_length=160):
     text = str(error).strip()
@@ -378,7 +378,7 @@ def save_history(tasks):
         with open(history_path, 'w', encoding='utf-8') as f:
             json.dump([t.to_dict() for t in tasks], f, indent=4)
     except Exception as e:
-        print(f"Failed to save history: {e}")
+        logging.error("Failed to save history: %s", e)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -1344,7 +1344,7 @@ class MainWindow(QMainWindow):
                 try:
                     os.remove(task.filepath)
                 except Exception as e:
-                    print(f"Failed to delete {task.filepath}: {e}")
+                    logging.error("Failed to delete %s: %s", task.filepath, e)
 
             # 3. Remove from UI tree
             if task.tree_item:
