@@ -1213,7 +1213,9 @@ class MainWindow(QMainWindow):
         return sys.executable, f'"{os.path.abspath(__file__)}"'
 
     def _task_key(self, task):
-        return task.link
+        # Identity, not link: two tasks can share a link (re-added/duplicate),
+        # which would collide in the session's byte/completion accounting.
+        return id(task)
 
     def scheduler_tick(self):
         now = _dt.datetime.now()

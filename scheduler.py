@@ -42,7 +42,9 @@ def parse_hhmm(value):
 def _day_active(start_date, sched):
     if sched.get("recurrence") == "once":
         return start_date.isoformat() == sched.get("date")
-    days = sched.get("days") or list(range(7))
+    # Distinguish "key absent" (legacy/partial settings -> default all days)
+    # from "present but empty" (user unchecked every day -> never active).
+    days = sched["days"] if "days" in sched else list(range(7))
     return start_date.weekday() in set(days)
 
 
@@ -63,6 +65,9 @@ def is_within_window(now, sched):
         start_dt = dt.datetime.combine(start_date, start_t)
         end_dt = dt.datetime.combine(start_date, end_t)
         if end_t <= start_t:                 # crosses midnight -> ends next day
+            # ponytail: start == end is treated as a full 24h window (not
+            # zero-length); the dialog offers distinct start/end so this is a
+            # deliberate "all day" interpretation, not an error.
             end_dt += dt.timedelta(days=1)
         if start_dt <= now < end_dt and _day_active(start_date, sched):
             return True
@@ -147,7 +152,10 @@ def append_report(summary, path):
 # --------------------------------------------------------------------------
 # OS helpers — Windows-specific, no-op / graceful elsewhere.
 # --------------------------------------------------------------------------
-def check_connection(host="1.1.1.1", port=443, timeout=3):
+def check_connection(host="1.1.1.1", port=443, timeout=1.5):
+    # ponytail: called synchronously from the GUI thread on window-open, so the
+    # timeout is kept short (worst-case ~1.5s stall, only at a window boundary
+    # every 30s poll while offline). Move off-thread if UI-freeze reports appear.
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -213,9 +221,11 @@ def register_wake_task(sched, executable, arguments=""):
     """
     if sys.platform != "win32":
         return False, "Wake timer is Windows-only; using keep-awake instead."
-    arg_part = f" -Argument '{arguments}'" if arguments else ""
+    # Escape single quotes for PowerShell single-quoted string literals ('' = ').
+    exe = executable.replace("'", "''")
+    arg_part = f" -Argument '{arguments.replace(chr(39), chr(39) * 2)}'" if arguments else ""
     ps = (
-        f"$a = New-ScheduledTaskAction -Execute '{executable}'{arg_part}; "
+        f"$a = New-ScheduledTaskAction -Execute '{exe}'{arg_part}; "
         f"$t = {_trigger_expr(sched)}; "
         f"$s = New-ScheduledTaskSettingsSet -WakeToRun -AllowStartIfOnBatteries "
         f"-DontStopIfGoingOnBatteries; "

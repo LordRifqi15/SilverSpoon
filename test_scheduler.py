@@ -69,6 +69,20 @@ def test_disabled_never_matches():
     assert sc.is_within_window(D(hh=12), s) is False
 
 
+def test_empty_days_never_active():
+    # Unchecking every weekday must mean "never", not silently "every day".
+    s = {"enabled": True, "start": "02:00", "end": "06:00",
+         "recurrence": "weekly", "days": []}
+    assert sc.is_within_window(D(hh=3, wd=0), s) is False
+    assert sc.is_within_window(D(hh=3, wd=3), s) is False
+
+
+def test_missing_days_key_defaults_all():
+    # Legacy/partial settings with no 'days' key default to every day.
+    s = {"enabled": True, "start": "02:00", "end": "06:00", "recurrence": "weekly"}
+    assert sc.is_within_window(D(hh=3, wd=0), s) is True
+
+
 # ---- edge detection --------------------------------------------------------
 def test_scheduler_edges():
     s = {"enabled": True, "start": "02:00", "end": "06:00",
