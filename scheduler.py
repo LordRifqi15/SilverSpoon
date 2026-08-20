@@ -199,9 +199,9 @@ def append_report(summary, path):
 # OS helpers — Windows-specific, no-op / graceful elsewhere.
 # --------------------------------------------------------------------------
 def check_connection(host="1.1.1.1", port=443, timeout=1.5):
-    # ponytail: called synchronously from the GUI thread on window-open, so the
-    # timeout is kept short (worst-case ~1.5s stall, only at a window boundary
-    # every 30s poll while offline). Move off-thread if UI-freeze reports appear.
+    # Called from a short-lived background probe thread (see MainWindow._offpeak_open),
+    # so it never blocks the GUI; the short timeout just bounds how long that probe
+    # lingers before the next poll retries.
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True

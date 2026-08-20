@@ -23,6 +23,16 @@ def test_shade_darkens_and_lightens():
     assert len(dark) == 7 and dark.startswith("#")
 
 
+def test_shade_rejects_invalid_hex():
+    # Non #rgb/#rrggbb inputs (alpha, wrong length, non-hex) must fail fast.
+    for bad in ("#12345678", "#1234", "#12", "#xyz", "red"):
+        try:
+            P._shade(bad, 1.0)
+        except ValueError:
+            continue
+        raise AssertionError(f"expected ValueError for {bad!r}")
+
+
 def test_button_style_has_all_states():
     qss = P.button_style("#2ecc71")
     for token in ("QPushButton", ":hover", ":pressed", ":disabled",

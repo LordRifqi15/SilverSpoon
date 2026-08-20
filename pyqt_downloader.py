@@ -10,6 +10,7 @@ import tempfile
 import contextlib
 import zipfile
 import shutil
+import uuid
 from collections import deque
 
 logging.basicConfig(
@@ -463,6 +464,9 @@ class DownloadTask:
         self.save_dir = os.path.normpath(os.path.join(self.base_save_dir, self.folder_name))
         self.filepath = os.path.normpath(os.path.join(self.save_dir, self.filename))
         
+        # Stable per-instance id: survives restart (persisted) and uniquely
+        # identifies this task even when two tasks share the same link.
+        self.uid = uuid.uuid4().hex
         self.status = "Queued"
         self.progress = 0.0
         self.speed = 0.0
@@ -478,6 +482,7 @@ class DownloadTask:
 
     def to_dict(self):
         return {
+            "uid": self.uid,
             "link": self.link,
             "base_save_dir": self.base_save_dir,
             "folder_name": self.folder_name,
@@ -498,6 +503,10 @@ class DownloadTask:
         else:
             task.status = data["status"]
             
+        # Keep the persisted uid so scheduled targets survive a restart; older
+        # history without one keeps the freshly generated uid.
+        if data.get("uid"):
+            task.uid = data["uid"]
         task.downloaded_bytes = data.get("downloaded_bytes", 0)
         task.total_bytes = data.get("total_bytes", 0)
         task.progress = data.get("progress", 0.0)
@@ -580,7 +589,7 @@ class MainWindow(QMainWindow):
         self.schedule = self.settings.get("schedule") or offpeak.default_schedule()
         self.offpeak_controller = offpeak.OffPeakScheduler(self.schedule)
         self.offpeak_session = None
-        self.offpeak_session_links = None
+        self.offpeak_session_uids = None
         self._offpeak_probing = False
         self._offpeak_open_ready.connect(self._do_offpeak_open)
         self.sched_timer = QTimer()
@@ -1257,17 +1266,17 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Selection",
                                     "Select one or more downloads to schedule.")
             return
-        links = sorted({t.link for t in tasks})
-        label = (f"{len(tasks)} selected download(s)" if len(links) != 1
+        uids = [t.uid for t in tasks]
+        label = (f"{len(tasks)} selected download(s)" if len(tasks) != 1
                  else os.path.basename(tasks[0].filename))
-        self._open_scheduler(targets=links, scope_label=label)
+        self._open_scheduler(targets=uids, scope_label=label)
 
     def _open_scheduler(self, targets, scope_label):
         dialog = DownloadSchedulerDialog(self.schedule, scope_label, self)
         if not dialog.exec():
             return
         self.schedule = dialog.get_schedule()
-        # None => whole queue; a list of links => only those downloads.
+        # None => whole queue; a list of task uids => only those downloads.
         self.schedule["targets"] = targets
         self.settings["schedule"] = self.schedule
         save_settings(self.settings)
@@ -1291,12 +1300,12 @@ class MainWindow(QMainWindow):
         self.schedule_indicator_label.setVisible(bool(text))
 
     def _scheduled_tasks(self):
-        """Tasks the active schedule targets: all, or only the chosen links."""
+        """Tasks the active schedule targets: all, or only the chosen uids."""
         targets = self.schedule.get("targets")
         if not targets:
             return list(self.tasks)
         targets = set(targets)
-        return [t for t in self.tasks if t.link in targets]
+        return [t for t in self.tasks if t.uid in targets]
 
     def _launch_command(self):
         """Executable + argument string used by the wake task to relaunch the app."""
@@ -1305,9 +1314,9 @@ class MainWindow(QMainWindow):
         return sys.executable, f'"{os.path.abspath(__file__)}"'
 
     def _task_key(self, task):
-        # Identity, not link: two tasks can share a link (re-added/duplicate),
+        # Stable uid, not link: two tasks can share a link (re-added/duplicate),
         # which would collide in the session's byte/completion accounting.
-        return id(task)
+        return task.uid
 
     def scheduler_tick(self):
         now = _dt.datetime.now()
@@ -1355,7 +1364,7 @@ class MainWindow(QMainWindow):
             if task.status in ("Completed", "Extracted"):
                 session.completed_before.add(key)
         self.offpeak_session = session
-        self.offpeak_session_links = {t.link for t in scheduled}
+        self.offpeak_session_uids = {t.uid for t in scheduled}
 
         started = 0
         for task in scheduled:
@@ -1371,9 +1380,9 @@ class MainWindow(QMainWindow):
     def _offpeak_close(self, now):
         offpeak.allow_sleep()
         # Pause only the tasks this window was responsible for.
-        links = getattr(self, "offpeak_session_links", None)
+        uids = getattr(self, "offpeak_session_uids", None)
         for task in self.tasks:
-            if links is not None and task.link not in links:
+            if uids is not None and task.uid not in uids:
                 continue
             if task.status in ("Downloading", "Pending", "Starting..."):
                 task.pause_flag = True
@@ -1384,18 +1393,23 @@ class MainWindow(QMainWindow):
         if session is None:
             return
 
-        scheduled = [t for t in self.tasks if links is None or t.link in links]
+        scheduled = [t for t in self.tasks if uids is None or t.uid in uids]
         bytes_now = {self._task_key(t): t.downloaded_bytes for t in scheduled}
         completed_now = {self._task_key(t) for t in scheduled
                          if t.status in ("Completed", "Extracted")}
         summary = offpeak.summarize(session, now, bytes_now, completed_now)
-        offpeak.append_report(summary, offpeak.get_report_path())
+        report_path = offpeak.get_report_path()
+        report_saved = offpeak.append_report(summary, report_path)
+        if not report_saved:
+            logging.warning("Failed to append off-peak report to %s", report_path)
         logging.info("Scheduled download window closed; %s", summary)
-        self._show_offpeak_summary(summary)
+        self._show_offpeak_summary(summary, report_path if report_saved else None)
 
-    def _show_offpeak_summary(self, summary):
+    def _show_offpeak_summary(self, summary, report_path):
         gb = summary["bytes_downloaded"] / (1024 ** 3)
         mins = summary["duration_seconds"] / 60
+        report_line = (f"<i>Report appended to {report_path}</i>" if report_path
+                       else "<i>Note: the report file could not be written.</i>")
         text = (
             f"<b>Scheduled download window finished.</b><br><br>"
             f"Files completed: <b>{summary['files_completed']}</b><br>"
@@ -1403,7 +1417,7 @@ class MainWindow(QMainWindow):
             f"Active duration: <b>{mins:.0f} min</b><br>"
             f"Average speed: <b>{summary['avg_speed_mbps']:.2f} MB/s</b><br>"
             f"Peak speed: <b>{summary['peak_speed_mbps']:.2f} MB/s</b><br><br>"
-            f"<i>Report appended to {offpeak.get_report_path()}</i>"
+            f"{report_line}"
         )
         QMessageBox.information(self, "Download Scheduler — Summary", text)
 

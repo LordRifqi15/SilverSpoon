@@ -14,6 +14,9 @@ def _shade(hex_color, factor):
     h = hex_color.lstrip("#")
     if len(h) == 3:                       # expand shorthand, e.g. 555 -> 555555
         h = "".join(c * 2 for c in h)
+    if len(h) != 6 or any(c not in "0123456789abcdefABCDEF" for c in h):
+        raise ValueError(
+            f"expected a #rgb or #rrggbb hex color, got {hex_color!r}")
     r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
     r, g, b = (max(0, min(255, round(c * factor))) for c in (r, g, b))
     return f"#{r:02x}{g:02x}{b:02x}"
