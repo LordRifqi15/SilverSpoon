@@ -10,6 +10,7 @@ import tempfile
 import contextlib
 import zipfile
 import shutil
+import uuid
 from collections import deque
 
 logging.basicConfig(
@@ -23,10 +24,11 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTextEdit, QTreeWidget,
     QTreeWidgetItem, QHeaderView, QFileDialog, QAbstractItemView,
     QCheckBox, QDialog, QFormLayout, QSpinBox, QDialogButtonBox,
-    QMessageBox, QInputDialog, QSplashScreen, QMenu, QStyledItemDelegate
+    QMessageBox, QInputDialog, QSplashScreen, QMenu, QStyledItemDelegate,
+    QDateEdit, QRadioButton, QButtonGroup, QGroupBox, QComboBox
 )
 from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QPixmap, QColor, QBrush, QKeySequence
-from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent
+from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QDate
 
 class ProgressBarDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
@@ -58,8 +60,11 @@ class ProgressBarDelegate(QStyledItemDelegate):
 
 from curl_cffi import requests as curl_requests
 from cf_turnstile import TurnstileSolver
-from PyQt6.QtCore import QMetaObject, Q_ARG
+from PyQt6.QtCore import QMetaObject, Q_ARG, pyqtSignal
 from update_logic import UpdateCheckerThread, UpdateDownloaderDialog
+import datetime as _dt
+import scheduler as offpeak
+from ui_style import button_style
 
 CURRENT_VERSION = "v1.4.0"
 GITHUB_REPO = "billysams21/SilverSpoon"
@@ -108,7 +113,7 @@ def save_settings(settings):
         with open(settings_path, 'w', encoding='utf-8') as f:
             json.dump(settings, f, indent=4)
     except Exception as e:
-        print(f"Failed to save settings: {e}")
+        logging.error("Failed to save settings: %s", e)
 
 def format_error_message(error, max_length=160):
     text = str(error).strip()
@@ -129,6 +134,7 @@ def format_error_message(error, max_length=160):
     if len(text) > max_length:
         text = text[:max_length].rstrip() + "..."
     return f"{error_type}: {text}"
+
 
 class WarningDialog(QDialog):
     def __init__(self, settings, parent=None):
@@ -293,6 +299,183 @@ class SettingsDialog(QDialog):
             "last_update_check": self.current_settings.get("last_update_check", 0.0)
         }
 
+
+class TimePicker(QWidget):
+    """Hour / minute / AM-PM dropdowns. Reads and writes 24-hour 'HH:mm'
+    internally so the stored schedule format is unchanged; the user sees a
+    clear 12-hour time with an explicit AM/PM instead of a bare spinbox."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.hour = QComboBox()
+        self.hour.addItems([f"{h:02d}" for h in range(1, 13)])
+        self.minute = QComboBox()
+        self.minute.addItems([f"{m:02d}" for m in range(60)])
+        self.ampm = QComboBox()
+        self.ampm.addItems(["AM", "PM"])
+        row.addWidget(self.hour)
+        row.addWidget(QLabel(":"))
+        row.addWidget(self.minute)
+        row.addWidget(self.ampm)
+        row.addStretch()
+
+    def set_hhmm(self, value):
+        h12, m, ampm = offpeak.split_12h(value)
+        self.hour.setCurrentText(f"{h12:02d}")
+        self.minute.setCurrentText(f"{m:02d}")
+        self.ampm.setCurrentText(ampm)
+
+    def get_hhmm(self):
+        return offpeak.join_24h(int(self.hour.currentText()),
+                                int(self.minute.currentText()),
+                                self.ampm.currentText())
+
+
+class DownloadSchedulerDialog(QDialog):
+    """Configure a recurring (or one-off) download window, either for the whole
+    queue or for a specific set of selected downloads (scope_label)."""
+
+    def __init__(self, schedule, scope_label="entire queue", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Download Scheduler")
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+
+        scope = QLabel(f"Scheduling: <b>{scope_label}</b>")
+        layout.addWidget(scope)
+
+        # --- Window times ---
+        times_box = QGroupBox("Window")
+        times_form = QFormLayout(times_box)
+        self.start_edit = TimePicker()
+        self.start_edit.set_hhmm(schedule.get("start", "02:00"))
+        self.end_edit = TimePicker()
+        self.end_edit.set_hhmm(schedule.get("end", "06:00"))
+        times_form.addRow("Start:", self.start_edit)
+        times_form.addRow("End:", self.end_edit)
+        times_form.addRow(QLabel("<i>End before start = window crosses midnight.</i>"))
+        layout.addWidget(times_box)
+
+        # --- Recurrence ---
+        rec_box = QGroupBox("Recurrence")
+        rec_layout = QVBoxLayout(rec_box)
+        self.rec_group = QButtonGroup(self)
+        self.weekly_radio = QRadioButton("Repeat weekly on:")
+        self.once_radio = QRadioButton("Run once on:")
+        self.rec_group.addButton(self.weekly_radio)
+        self.rec_group.addButton(self.once_radio)
+        rec_layout.addWidget(self.weekly_radio)
+
+        days_row = QHBoxLayout()
+        self.day_checks = []
+        active_days = set(schedule.get("days", list(range(7))))
+        for i, name in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
+            cb = QCheckBox(name)
+            cb.setChecked(i in active_days)
+            self.day_checks.append(cb)
+            days_row.addWidget(cb)
+        rec_layout.addLayout(days_row)
+
+        once_row = QHBoxLayout()
+        once_row.addWidget(self.once_radio)
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        d = schedule.get("date") or _dt.date.today().isoformat()
+        self.date_edit.setDate(QDate.fromString(d, "yyyy-MM-dd"))
+        once_row.addWidget(self.date_edit)
+        once_row.addStretch()
+        rec_layout.addLayout(once_row)
+        layout.addWidget(rec_box)
+
+        if schedule.get("recurrence") == "once":
+            self.once_radio.setChecked(True)
+        else:
+            self.weekly_radio.setChecked(True)
+        self.rec_group.buttonToggled.connect(self._sync_recurrence_enabled)
+        self._sync_recurrence_enabled()
+
+        # --- Power / behaviour ---
+        self.wake_cb = QCheckBox("Wake the computer to run downloads (Windows only)")
+        self.wake_cb.setChecked(schedule.get("wake_timer", False))
+        self.keep_awake_cb = QCheckBox("Keep the computer awake while the window is open")
+        self.keep_awake_cb.setChecked(schedule.get("keep_awake", True))
+        layout.addWidget(self.wake_cb)
+        layout.addWidget(self.keep_awake_cb)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_btn.setText("Add Schedule")
+        self.remove_btn = buttons.addButton("Remove Schedule", QDialogButtonBox.ButtonRole.DestructiveRole)
+        self.remove_btn.clicked.connect(self._remove_schedule)
+        self.remove_btn.setVisible(schedule.get("enabled", False))
+        self.is_removed = False
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _remove_schedule(self):
+        self.is_removed = True
+        self.accept()
+
+    def accept(self):
+        if getattr(self, "is_removed", False):
+            super().accept()
+            return
+
+        # Guard: a weekly schedule with no weekday ticked would never fire.
+        if (self.weekly_radio.isChecked()
+                and not any(cb.isChecked() for cb in self.day_checks)):
+            QMessageBox.warning(self, "No days selected",
+                                "Pick at least one day, or choose Run once.")
+            return
+
+        # Guard: a one-off schedule with a date that is completely in the past.
+        if self.once_radio.isChecked():
+            start_date = self.date_edit.date().toPyDate()
+            start_t = offpeak.parse_hhmm(self.start_edit.get_hhmm())
+            end_t = offpeak.parse_hhmm(self.end_edit.get_hhmm())
+            end_date = start_date + _dt.timedelta(days=1) if end_t <= start_t else start_date
+            end_dt = _dt.datetime.combine(end_date, end_t)
+            if _dt.datetime.now() >= end_dt:
+                QMessageBox.warning(self, "Invalid Date",
+                                    "The selected one-off schedule window has already passed.\n"
+                                    "Please select a current or future date.")
+                return
+        super().accept()
+
+    def _sync_recurrence_enabled(self, *args):
+        weekly = self.weekly_radio.isChecked()
+        for cb in self.day_checks:
+            cb.setEnabled(weekly)
+        self.date_edit.setEnabled(not weekly)
+
+    def get_schedule(self):
+        if getattr(self, "is_removed", False):
+            return {
+                "enabled": False,
+                "start": self.start_edit.get_hhmm(),
+                "end": self.end_edit.get_hhmm(),
+                "recurrence": "once" if self.once_radio.isChecked() else "weekly",
+                "days": [i for i, cb in enumerate(self.day_checks) if cb.isChecked()],
+                "date": self.date_edit.date().toString("yyyy-MM-dd"),
+                "wake_timer": self.wake_cb.isChecked(),
+                "keep_awake": self.keep_awake_cb.isChecked(),
+            }
+        return {
+            "enabled": True,
+            "start": self.start_edit.get_hhmm(),
+            "end": self.end_edit.get_hhmm(),
+            "recurrence": "once" if self.once_radio.isChecked() else "weekly",
+            "days": [i for i, cb in enumerate(self.day_checks) if cb.isChecked()],
+            "date": self.date_edit.date().toString("yyyy-MM-dd"),
+            "wake_timer": self.wake_cb.isChecked(),
+            "keep_awake": self.keep_awake_cb.isChecked(),
+        }
+
 class DownloadTask:
     def __init__(self, link, base_save_dir, folder_name=None):
         self.link = link.strip()
@@ -314,6 +497,9 @@ class DownloadTask:
         self.save_dir = os.path.normpath(os.path.join(self.base_save_dir, self.folder_name))
         self.filepath = os.path.normpath(os.path.join(self.save_dir, self.filename))
         
+        # Stable per-instance id: survives restart (persisted) and uniquely
+        # identifies this task even when two tasks share the same link.
+        self.uid = uuid.uuid4().hex
         self.status = "Queued"
         self.progress = 0.0
         self.speed = 0.0
@@ -329,6 +515,7 @@ class DownloadTask:
 
     def to_dict(self):
         return {
+            "uid": self.uid,
             "link": self.link,
             "base_save_dir": self.base_save_dir,
             "folder_name": self.folder_name,
@@ -349,6 +536,10 @@ class DownloadTask:
         else:
             task.status = data["status"]
             
+        # Keep the persisted uid so scheduled targets survive a restart; older
+        # history without one keeps the freshly generated uid.
+        if data.get("uid"):
+            task.uid = data["uid"]
         task.downloaded_bytes = data.get("downloaded_bytes", 0)
         task.total_bytes = data.get("total_bytes", 0)
         task.progress = data.get("progress", 0.0)
@@ -377,9 +568,13 @@ def save_history(tasks):
         with open(history_path, 'w', encoding='utf-8') as f:
             json.dump([t.to_dict() for t in tasks], f, indent=4)
     except Exception as e:
-        print(f"Failed to save history: {e}")
+        logging.error("Failed to save history: %s", e)
 
 class MainWindow(QMainWindow):
+    # Emitted from the connectivity-probe thread once a window-open probe
+    # succeeds; carries `now` and is handled on the GUI thread.
+    _offpeak_open_ready = pyqtSignal(object)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SilverSpoon - UI (PyQt6)")
@@ -423,6 +618,22 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.update_ui)
         self.timer.start(500)
 
+        # Off-peak scheduler: poll on a slow timer; boundaries flip task status.
+        self.schedule = self.settings.get("schedule") or offpeak.default_schedule()
+        self.offpeak_controller = offpeak.OffPeakScheduler(self.schedule)
+        self.offpeak_session = None
+        self.offpeak_session_uids = None
+        self._offpeak_probing = False
+        self._offpeak_open_ready.connect(self._do_offpeak_open)
+        self.sched_timer = QTimer()
+        self.sched_timer.timeout.connect(self.scheduler_tick)
+        self.sched_timer.start(30_000)
+        # Kick a first poll shortly after launch so a wake-launched app (or one
+        # opened mid-window) starts downloading without waiting a full interval.
+        QTimer.singleShot(1500, self.scheduler_tick)
+
+        self._refresh_schedule_indicator()
+
     def closeEvent(self, event):
         save_history(self.tasks)
         col_widths = {}
@@ -430,6 +641,7 @@ class MainWindow(QMainWindow):
             col_widths[str(i)] = self.tree.columnWidth(i)
         self.settings["column_widths"] = col_widths
         save_settings(self.settings)
+        offpeak.allow_sleep()
         self.turnstile_solver.stop()
         event.accept()
 
@@ -445,7 +657,11 @@ class MainWindow(QMainWindow):
         settings_action = QAction("&Settings", self)
         settings_action.triggered.connect(self.open_settings_dialog)
         file_menu.addAction(settings_action)
-        
+
+        schedule_action = QAction("&Download Scheduler...", self)
+        schedule_action.triggered.connect(self.open_queue_scheduler)
+        file_menu.addAction(schedule_action)
+
         file_menu.addSeparator()
 
         exit_action = QAction("&Exit", self)
@@ -511,6 +727,11 @@ class MainWindow(QMainWindow):
         self.global_speed_label = QLabel("Global Speed: 0.00 MB/s")
         self.global_speed_label.setStyleSheet("font-weight: bold; color: #2ecc71;")
         stats_layout.addWidget(self.global_speed_label)
+
+        self.schedule_indicator_label = QLabel("")
+        self.schedule_indicator_label.setStyleSheet("font-weight: bold; color: #f39c12;")
+        self.schedule_indicator_label.setVisible(False)
+        stats_layout.addWidget(self.schedule_indicator_label)
         main_layout.addLayout(stats_layout)
         
         self.text_links = QTextEdit()
@@ -524,7 +745,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.text_links)
         
         add_btn = QPushButton("Add Links to Queue")
-        add_btn.setStyleSheet("background-color: #2e55cc; color: white; font-weight: bold; padding: 6px;")
+        add_btn.setStyleSheet(button_style("#2e55cc"))
         add_btn.clicked.connect(self.add_links)
         main_layout.addWidget(add_btn)
 
@@ -583,37 +804,37 @@ class MainWindow(QMainWindow):
         action_layout.addWidget(self.select_all_btn)
         
         self.start_btn = QPushButton("Start / Resume")
-        self.start_btn.setStyleSheet("background-color: #2ecc71; color: white; font-weight: bold; padding: 6px;")
+        self.start_btn.setStyleSheet(button_style("#2ecc71"))
         self.start_btn.clicked.connect(self.start_downloads)
         action_layout.addWidget(self.start_btn)
         
         self.pause_btn = QPushButton("Pause")
-        self.pause_btn.setStyleSheet("background-color: #f39c12; color: white; font-weight: bold; padding: 6px;")
+        self.pause_btn.setStyleSheet(button_style("#f39c12"))
         self.pause_btn.clicked.connect(self.pause_selected)
         action_layout.addWidget(self.pause_btn)
         
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold; padding: 6px;")
+        self.cancel_btn.setStyleSheet(button_style("#e74c3c"))
         self.cancel_btn.clicked.connect(self.cancel_selected)
         action_layout.addWidget(self.cancel_btn)
         
         self.retry_btn = QPushButton("Retry")
-        self.retry_btn.setStyleSheet("background-color: #9b59b6; color: white; font-weight: bold; padding: 6px;")
+        self.retry_btn.setStyleSheet(button_style("#9b59b6"))
         self.retry_btn.clicked.connect(self.retry_selected)
         action_layout.addWidget(self.retry_btn)
 
         self.force_redownload_btn = QPushButton("Force Redownload")
-        self.force_redownload_btn.setStyleSheet("background-color: #300101; color: white; font-weight: bold; padding: 6px;")
+        self.force_redownload_btn.setStyleSheet(button_style("#300101"))
         self.force_redownload_btn.clicked.connect(self.force_redownload_selected)
         action_layout.addWidget(self.force_redownload_btn)
 
         self.copy_log_btn = QPushButton("Copy Error Details")
-        self.copy_log_btn.setStyleSheet("background-color: #555; color: white; font-weight: bold; padding: 6px;")
+        self.copy_log_btn.setStyleSheet(button_style("#555"))
         self.copy_log_btn.clicked.connect(self.copy_selected_error_log)
         action_layout.addWidget(self.copy_log_btn)
         
         self.delete_btn = QPushButton("🗑️ Delete")
-        self.delete_btn.setStyleSheet("background-color: #34495e; color: white; font-weight: bold; padding: 6px;")
+        self.delete_btn.setStyleSheet(button_style("#34495e"))
         self.delete_btn.clicked.connect(self.delete_selected)
         action_layout.addWidget(self.delete_btn)
         
@@ -690,6 +911,8 @@ class MainWindow(QMainWindow):
         menu.addAction("[R] Retry", self.retry_selected)
         menu.addAction("[F] Force Redownload", self.force_redownload_selected)
         menu.addAction("Copy Error Details", self.copy_selected_error_log)
+        menu.addSeparator()
+        menu.addAction("Schedule download at specific interval", self.schedule_selected_downloads)
         menu.addSeparator()
         menu.addAction("Delete", self.delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(position))
@@ -1051,7 +1274,9 @@ class MainWindow(QMainWindow):
     def open_settings_dialog(self):
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
-            self.settings = dialog.get_updated_settings()
+            # Merge (not replace) so keys the dialog doesn't manage — e.g. the
+            # off-peak "schedule" — are preserved.
+            self.settings.update(dialog.get_updated_settings())
             save_settings(self.settings)
             self.max_workers = self.settings.get("max_workers", 3)
             new_timeout = self.settings.get("captcha_timeout", 10)
@@ -1059,6 +1284,175 @@ class MainWindow(QMainWindow):
             default_dir = self.settings.get("default_save_dir", os.path.join(os.path.expanduser("~"), "Downloads"))
             self.dir_input.setText(default_dir)
             self.extract_checkbox.setChecked(self.settings.get("extract_after_download", False))
+
+    # ------------------------------------------------------------------
+    # Download scheduling
+    # ------------------------------------------------------------------
+    def open_queue_scheduler(self):
+        """File menu: schedule the whole queue."""
+        self._open_scheduler(targets=None, scope_label="entire queue")
+
+    def schedule_selected_downloads(self):
+        """Right-click: schedule only the selected download(s)."""
+        tasks = self.get_selected_tasks()
+        if not tasks:
+            QMessageBox.information(self, "No Selection",
+                                    "Select one or more downloads to schedule.")
+            return
+        uids = [t.uid for t in tasks]
+        label = (f"{len(tasks)} selected download(s)" if len(tasks) != 1
+                 else os.path.basename(tasks[0].filename))
+        self._open_scheduler(targets=uids, scope_label=label)
+
+    def _open_scheduler(self, targets, scope_label):
+        dialog = DownloadSchedulerDialog(self.schedule, scope_label, self)
+        if not dialog.exec():
+            return
+        self.schedule = dialog.get_schedule()
+        # None => whole queue; a list of task uids => only those downloads.
+        self.schedule["targets"] = targets
+        self.settings["schedule"] = self.schedule
+        save_settings(self.settings)
+        self.offpeak_controller.update(self.schedule)
+
+        # (Un)register the Windows wake timer to match the saved settings.
+        if self.schedule.get("enabled") and self.schedule.get("wake_timer"):
+            executable, arguments = self._launch_command()
+            ok, msg = offpeak.register_wake_task(self.schedule, executable, arguments)
+            title = "Wake Timer" if ok else "Wake Timer Unavailable"
+            (QMessageBox.information if ok else QMessageBox.warning)(self, title, msg)
+        else:
+            offpeak.unregister_wake_task()
+
+        self._refresh_schedule_indicator()
+
+    def _refresh_schedule_indicator(self):
+        """Update the armed-schedule label; hide it when nothing is scheduled."""
+        text = offpeak.describe_schedule(self.schedule)
+        self.schedule_indicator_label.setText(f"⏰ {text}")
+        self.schedule_indicator_label.setVisible(bool(text))
+
+    def _scheduled_tasks(self):
+        """Tasks the active schedule targets: all, or only the chosen uids."""
+        targets = self.schedule.get("targets")
+        if not targets:
+            return list(self.tasks)
+        targets = set(targets)
+        return [t for t in self.tasks if t.uid in targets]
+
+    def _launch_command(self):
+        """Executable + argument string used by the wake task to relaunch the app."""
+        if getattr(sys, "frozen", False):
+            return sys.executable, ""
+        return sys.executable, f'"{os.path.abspath(__file__)}"'
+
+    def _task_key(self, task):
+        # Stable uid, not link: two tasks can share a link (re-added/duplicate),
+        # which would collide in the session's byte/completion accounting.
+        return task.uid
+
+    def scheduler_tick(self):
+        now = _dt.datetime.now()
+        if self.offpeak_session is not None:
+            global_speed = sum(
+                t.speed for t in self.tasks if t.status == "Downloading")
+            self.offpeak_session.sample_speed(global_speed)
+        edge = self.offpeak_controller.poll(now)
+        if edge == "open":
+            self._offpeak_open(now)
+        elif edge == "close":
+            self._offpeak_close(now)
+
+    def _offpeak_open(self, now):
+        # Probe connectivity off the GUI thread (~1.5s) so the poll timer never
+        # stalls the UI. On success the probe emits _offpeak_open_ready, whose
+        # GUI-thread slot (_do_offpeak_open) does the Qt/task work.
+        if self._offpeak_probing:
+            return
+        self._offpeak_probing = True
+
+        def probe():
+            try:
+                if offpeak.check_connection():
+                    self._offpeak_open_ready.emit(now)
+                else:
+                    # No connection yet: the next tick (still inside the window)
+                    # will re-fire "open" and retry.
+                    self.offpeak_controller.cancel_open()
+                    logging.warning("Off-peak: no internet connection at window open; will retry.")
+            finally:
+                self._offpeak_probing = False
+
+        threading.Thread(target=probe, daemon=True).start()
+
+    def _do_offpeak_open(self, now):
+        if self.schedule.get("keep_awake", True):
+            offpeak.prevent_sleep()
+
+        scheduled = self._scheduled_tasks()
+        session = offpeak.OffPeakSession(now)
+        for task in scheduled:
+            key = self._task_key(task)
+            session.snapshot[key] = task.downloaded_bytes
+            if task.status in ("Completed", "Extracted"):
+                session.completed_before.add(key)
+        self.offpeak_session = session
+        self.offpeak_session_uids = {t.uid for t in scheduled}
+
+        started = 0
+        for task in scheduled:
+            if task.status in ("Queued", "Paused", "Cancelled", "Error",
+                               "CAPTCHA Timeout"):
+                task.status = "Pending"
+                task.error_message = ""
+                task.cancel_flag = False
+                task.pause_flag = False
+                started += 1
+        logging.info("Download window opened; queued %d task(s).", started)
+
+    def _offpeak_close(self, now):
+        offpeak.allow_sleep()
+        # Pause only the tasks this window was responsible for.
+        uids = getattr(self, "offpeak_session_uids", None)
+        for task in self.tasks:
+            if uids is not None and task.uid not in uids:
+                continue
+            if task.status in ("Downloading", "Pending", "Starting..."):
+                task.pause_flag = True
+                task.status = "Pausing..." if task.status == "Downloading" else "Paused"
+
+        session = self.offpeak_session
+        self.offpeak_session = None
+        if session is None:
+            return
+
+        scheduled = [t for t in self.tasks if uids is None or t.uid in uids]
+        bytes_now = {self._task_key(t): t.downloaded_bytes for t in scheduled}
+        completed_now = {self._task_key(t) for t in scheduled
+                         if t.status in ("Completed", "Extracted")}
+        summary = offpeak.summarize(session, now, bytes_now, completed_now)
+        report_path = offpeak.get_report_path()
+        report_saved = offpeak.append_report(summary, report_path)
+        if not report_saved:
+            logging.warning("Failed to append off-peak report to %s", report_path)
+        logging.info("Scheduled download window closed; %s", summary)
+        self._show_offpeak_summary(summary, report_path if report_saved else None)
+
+    def _show_offpeak_summary(self, summary, report_path):
+        gb = summary["bytes_downloaded"] / (1024 ** 3)
+        mins = summary["duration_seconds"] / 60
+        report_line = (f"<i>Report appended to {report_path}</i>" if report_path
+                       else "<i>Note: the report file could not be written.</i>")
+        text = (
+            f"<b>Scheduled download window finished.</b><br><br>"
+            f"Files completed: <b>{summary['files_completed']}</b><br>"
+            f"Downloaded: <b>{gb:.2f} GB</b><br>"
+            f"Active duration: <b>{mins:.0f} min</b><br>"
+            f"Average speed: <b>{summary['avg_speed_mbps']:.2f} MB/s</b><br>"
+            f"Peak speed: <b>{summary['peak_speed_mbps']:.2f} MB/s</b><br><br>"
+            f"{report_line}"
+        )
+        QMessageBox.information(self, "Download Scheduler — Summary", text)
 
     def browse_dir(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Save Directory", self.dir_input.text())
@@ -1355,7 +1749,7 @@ class MainWindow(QMainWindow):
                 try:
                     os.remove(task.filepath)
                 except Exception as e:
-                    print(f"Failed to delete {task.filepath}: {e}")
+                    logging.error("Failed to delete %s: %s", task.filepath, e)
 
             # 3. Remove from UI tree
             if task.tree_item:
