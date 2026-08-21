@@ -346,10 +346,6 @@ class DownloadSchedulerDialog(QDialog):
         scope = QLabel(f"Scheduling: <b>{scope_label}</b>")
         layout.addWidget(scope)
 
-        self.enabled_cb = QCheckBox("Enable scheduled downloads")
-        self.enabled_cb.setChecked(schedule.get("enabled", False))
-        layout.addWidget(self.enabled_cb)
-
         # --- Window times ---
         times_box = QGroupBox("Window")
         times_form = QFormLayout(times_box)
@@ -411,18 +407,44 @@ class DownloadSchedulerDialog(QDialog):
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_btn.setText("Add Schedule")
+        self.remove_btn = buttons.addButton("Remove Schedule", QDialogButtonBox.ButtonRole.DestructiveRole)
+        self.remove_btn.clicked.connect(self._remove_schedule)
+        self.remove_btn.setVisible(schedule.get("enabled", False))
+        self.is_removed = False
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _remove_schedule(self):
+        self.is_removed = True
+        self.accept()
+
     def accept(self):
-        # Guard: an enabled weekly schedule with no weekday ticked would never
-        # fire. Force the user to pick a day (or switch to "Run once").
-        if (self.enabled_cb.isChecked() and self.weekly_radio.isChecked()
+        if getattr(self, "is_removed", False):
+            super().accept()
+            return
+
+        # Guard: a weekly schedule with no weekday ticked would never fire.
+        if (self.weekly_radio.isChecked()
                 and not any(cb.isChecked() for cb in self.day_checks)):
             QMessageBox.warning(self, "No days selected",
                                 "Pick at least one day, or choose Run once.")
             return
+
+        # Guard: a one-off schedule with a date that is completely in the past.
+        if self.once_radio.isChecked():
+            start_date = self.date_edit.date().toPyDate()
+            start_t = offpeak.parse_hhmm(self.start_edit.get_hhmm())
+            end_t = offpeak.parse_hhmm(self.end_edit.get_hhmm())
+            end_date = start_date + _dt.timedelta(days=1) if end_t <= start_t else start_date
+            end_dt = _dt.datetime.combine(end_date, end_t)
+            if _dt.datetime.now() >= end_dt:
+                QMessageBox.warning(self, "Invalid Date",
+                                    "The selected one-off schedule window has already passed.\n"
+                                    "Please select a current or future date.")
+                return
         super().accept()
 
     def _sync_recurrence_enabled(self, *args):
@@ -432,8 +454,19 @@ class DownloadSchedulerDialog(QDialog):
         self.date_edit.setEnabled(not weekly)
 
     def get_schedule(self):
+        if getattr(self, "is_removed", False):
+            return {
+                "enabled": False,
+                "start": self.start_edit.get_hhmm(),
+                "end": self.end_edit.get_hhmm(),
+                "recurrence": "once" if self.once_radio.isChecked() else "weekly",
+                "days": [i for i, cb in enumerate(self.day_checks) if cb.isChecked()],
+                "date": self.date_edit.date().toString("yyyy-MM-dd"),
+                "wake_timer": self.wake_cb.isChecked(),
+                "keep_awake": self.keep_awake_cb.isChecked(),
+            }
         return {
-            "enabled": self.enabled_cb.isChecked(),
+            "enabled": True,
             "start": self.start_edit.get_hhmm(),
             "end": self.end_edit.get_hhmm(),
             "recurrence": "once" if self.once_radio.isChecked() else "weekly",
