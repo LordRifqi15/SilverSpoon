@@ -1506,16 +1506,24 @@ class MainWindow(QMainWindow):
                 logs = f.readlines()
                 
             keywords = [task.link, task.file_id, task.filename]
-            matching_logs = [line for line in logs if any(keyword and keyword in line for keyword in keywords)]
-            relevant_logs = "".join(matching_logs[-20:] if matching_logs else logs[-20:])
+            # Filter out INFO level logs, keep ERROR, WARNING, CRITICAL or exception tracebacks
+            error_logs = [line for line in logs if " - INFO - " not in line]
+            matching_logs = [line for line in error_logs if any(keyword and keyword in line for keyword in keywords)]
+            relevant_logs = "".join(matching_logs[-20:] if matching_logs else error_logs[-20:])
             
             if not relevant_logs.strip():
-                QMessageBox.information(self, "Log Empty", "The error log is empty.")
-                return
+                if task.error_message:
+                    relevant_logs = f"Error: {task.error_message}\n"
+                else:
+                    QMessageBox.information(self, "Log Empty", "No error log details found for this task.")
+                    return
                 
             clipboard = QApplication.clipboard()
-            log_label = "Matching log lines" if matching_logs else "Recent log lines"
-            clipboard.setText(f"Task File: {task.filename}\nTask Link: {task.link}\nStatus: {task.status}\n\n{log_label}:\n{relevant_logs}")
+            log_label = "Matching error logs" if matching_logs else ("Error details" if task.error_message and not matching_logs and not error_logs else "Recent error logs")
+            detail_text = f"Task File: {task.filename}\nTask Link: {task.link}\nStatus: {task.status}"
+            if task.error_message:
+                detail_text += f"\nError Detail: {task.error_message}"
+            clipboard.setText(f"{detail_text}\n\n{log_label}:\n{relevant_logs}")
             QMessageBox.information(self, "Log Copied", "Relevant error logs have been copied to your clipboard.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not read log file: {e}")
