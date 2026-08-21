@@ -544,7 +544,7 @@ class WarningDialog(QDialog):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Welcome to SilverSpoon!")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(480)
         self.settings = settings
         
         layout = QVBoxLayout(self)
@@ -567,21 +567,18 @@ class WarningDialog(QDialog):
         shortcuts_display.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(shortcuts_display)
         
-        # Warning Section
-        warning_label = QLabel("VPN USERS WARNING")
-        warning_label.setStyleSheet("color: #ff7b72; font-size: 13px; font-weight: bold;")
-        warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(warning_label)
+        # Tips Section
+        tips_label = QLabel("<b>Tips & Troubleshooting:</b>")
+        layout.addWidget(tips_label)
         
-        warning_text = QLabel(
-            "Cloudflare will aggressively block known VPN IPs. If your downloads are "
-            "failing or getting stuck, and you have tried to Force Redownload but "
-            "it keeps failing, please disable your VPN."
+        tips_box = QLabel(
+            "• <b>Slow Speeds:</b> If your download speed is too slow, try changing your DNS (e.g., Cloudflare 1.1.1.1 or Google 8.8.8.8) or enabling a VPN.<br>"
+            "• <b>CAPTCHA:</b> If a CAPTCHA prompt or browser window appears, please complete and solve it to allow downloads to proceed."
         )
-        warning_text.setWordWrap(True)
-        # Use a dynamic style based on the current palette instead of hardcoded white/black
-        warning_text.setStyleSheet("font-weight: 600; padding: 10px; border: 1px solid #f85149; border-radius: 6px; background-color: rgba(248, 81, 73, 0.1);")
-        layout.addWidget(warning_text)
+        tips_box.setTextFormat(Qt.TextFormat.RichText)
+        tips_box.setWordWrap(True)
+        tips_box.setStyleSheet("padding: 8px 10px; border: 1px solid #388bfd; border-radius: 6px; background-color: rgba(56, 139, 253, 0.1); font-size: 12px; line-height: 1.4;")
+        layout.addWidget(tips_box)
         
         # Don't show again checkbox
         self.dont_show_checkbox = QCheckBox("Don't show this again")

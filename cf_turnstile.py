@@ -297,8 +297,7 @@ class TurnstileSolver:
                 if not isinstance(token, str) or len(token) <= 20:
                     raise RuntimeError(
                         f"Cloudflare Turnstile did not produce a token after {self.TOKEN_TIMEOUT} seconds. "
-                        "Your IP may be flagged (try disabling VPN) or the site "
-                        "may require an interactive challenge."
+                        "Your IP may be flagged or the site may require an interactive challenge."
                     )
 
             fetch_js = (
