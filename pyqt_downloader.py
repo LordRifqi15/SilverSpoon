@@ -25,38 +25,277 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItem, QHeaderView, QFileDialog, QAbstractItemView,
     QCheckBox, QDialog, QFormLayout, QSpinBox, QDialogButtonBox,
     QMessageBox, QInputDialog, QSplashScreen, QMenu, QStyledItemDelegate,
-    QDateEdit, QRadioButton, QButtonGroup, QGroupBox, QComboBox
+    QComboBox, QFrame, QGridLayout, QProgressBar, QSizePolicy,
+    QDateEdit, QRadioButton, QButtonGroup, QGroupBox
 )
-from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QPixmap, QColor, QBrush, QKeySequence
-from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QDate
+from PyQt6.QtGui import (
+    QAction, QDesktopServices, QIcon, QPixmap, QColor, QBrush, 
+    QKeySequence, QPalette, QPainter, QLinearGradient, QPen, QFont,
+    QPainterPath
+)
+from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QRectF, QSize, QPointF, QDate
+from theme_styles import DARK_THEME_QSS, LIGHT_THEME_QSS
 
-class ProgressBarDelegate(QStyledItemDelegate):
-    def paint(self, painter, option, index):
-        if index.column() == 0:
-            item = self.parent().itemFromIndex(index)
-            if item:
-                progress = item.data(0, Qt.ItemDataRole.UserRole)
-                status = item.data(1, Qt.ItemDataRole.UserRole)
-                
-                if progress is not None and isinstance(progress, (int, float)):
-                    if status == "Error" or status == "Contains Errors":
-                        bg_color = QColor(231, 76, 60, 50)
-                    elif status in ("Completed", "Extracted"):
-                        bg_color = QColor(46, 204, 113, 50)
+class LiveSpeedGraph(QWidget):
+    def __init__(self, max_points=30, parent=None):
+        super().__init__(parent)
+        self.history = deque([0.0] * max_points, maxlen=max_points)
+        self.setFixedHeight(34)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+
+    def add_sample(self, speed_mb):
+        self.history.append(float(speed_mb))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        rect = self.rect()
+        w = float(rect.width())
+        h = float(rect.height())
+
+        if w <= 0 or h <= 0:
+            return
+
+        window_bg = self.palette().color(QPalette.ColorRole.Window)
+        is_dark = window_bg.lightness() < 128
+
+        # Draw subtle frame background
+        bg_col = QColor(10, 12, 16, 160) if is_dark else QColor(241, 245, 249, 160)
+        border_col = QColor(34, 39, 49, 140) if is_dark else QColor(203, 213, 225, 140)
+        painter.setPen(QPen(border_col, 1))
+        painter.setBrush(QBrush(bg_col))
+        painter.drawRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 2, 2)
+
+        data = list(self.history)
+        n = len(data)
+        if n < 2:
+            return
+
+        max_val = max(data)
+        if max_val <= 0.05:
+            max_val = 1.0  # baseline scale
+        else:
+            max_val = max_val * 1.25  # 25% headroom
+
+        top_padding = 4.0
+        bottom_padding = 4.0
+        draw_h = h - top_padding - bottom_padding
+
+        step_x = (w - 2.0) / (n - 1)
+        points = []
+        for i, val in enumerate(data):
+            px = 1.0 + i * step_x
+            ratio = min(1.0, max(0.0, val / max_val))
+            py = (h - bottom_padding) - (ratio * draw_h)
+            points.append(QPointF(px, py))
+
+        # Filled area underneath the graph line
+        fill_path = QPainterPath()
+        fill_path.moveTo(points[0].x(), h - 1.0)
+        for pt in points:
+            fill_path.lineTo(pt)
+        fill_path.lineTo(points[-1].x(), h - 1.0)
+        fill_path.closeSubpath()
+
+        grad = QLinearGradient(0, 0, 0, h)
+        if is_dark:
+            grad.setColorAt(0.0, QColor(63, 185, 80, 75))
+            grad.setColorAt(1.0, QColor(63, 185, 80, 5))
+            line_color = QColor(63, 185, 80, 230)
+        else:
+            grad.setColorAt(0.0, QColor(26, 127, 55, 60))
+            grad.setColorAt(1.0, QColor(26, 127, 55, 5))
+            line_color = QColor(26, 127, 55, 230)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(grad))
+        painter.drawPath(fill_path)
+
+        # Line on top
+        line_path = QPainterPath()
+        line_path.moveTo(points[0])
+        for pt in points[1:]:
+            line_path.lineTo(pt)
+
+        painter.setPen(QPen(line_color, 1.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(line_path)
+
+class ModernTaskDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def paint(self, painter: QPainter, option, index):
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+
+        item = self.parent().itemFromIndex(index)
+        col = index.column()
+        rect = option.rect
+
+        # Retrieve task progress and status data
+        progress = item.data(0, Qt.ItemDataRole.UserRole) if item else None
+        status = item.data(1, Qt.ItemDataRole.UserRole) if item else ""
+        if status is None:
+            status = item.text(2) if item else ""
+
+        # Column 0: Clean native render (no background tinting for maximum text clarity)
+        if col == 0:
+            pass
+
+        # Column 2: Status Tag (Crisp subtle border, minimal rounding, theme-aware contrast)
+        elif col == 2:
+            status_text = item.text(2) if item else ""
+            if status_text:
+                is_error = "Error" in status_text or status_text == "Contains Errors" or status_text == "CAPTCHA Timeout"
+                is_done = status_text in ("Completed", "Extracted")
+                is_active = status_text in ("Downloading", "Active", "Extracting...", "Solving CAPTCHA...", "Starting...")
+                is_paused = status_text in ("Paused", "Pausing...", "Cancelled")
+
+                # Detect if the app is currently running in dark or light mode based on window palette
+                window_bg = option.palette.color(QPalette.ColorRole.Window)
+                is_dark = window_bg.lightness() < 128
+
+                if is_dark:
+                    if is_error:
+                        bg_color = QColor(239, 68, 68, 30)
+                        border_color = QColor(239, 68, 68, 140)
+                        text_color = QColor(252, 165, 165)
+                    elif is_done:
+                        bg_color = QColor(34, 197, 94, 25)
+                        border_color = QColor(34, 197, 94, 140)
+                        text_color = QColor(134, 239, 172)
+                    elif is_active:
+                        bg_color = QColor(14, 165, 233, 25)
+                        border_color = QColor(14, 165, 233, 140)
+                        text_color = QColor(125, 211, 252)
+                    elif is_paused:
+                        bg_color = QColor(234, 179, 8, 20)
+                        border_color = QColor(234, 179, 8, 120)
+                        text_color = QColor(253, 224, 71)
                     else:
-                        bg_color = QColor(52, 152, 219, 50)
+                        bg_color = QColor(100, 116, 139, 20)
+                        border_color = QColor(100, 116, 139, 80)
+                        text_color = QColor(203, 213, 225)
+                else:
+                    # Light mode high-contrast text and solid legible backgrounds
+                    if is_error:
+                        bg_color = QColor(254, 242, 242)
+                        border_color = QColor(248, 113, 113)
+                        text_color = QColor(153, 27, 27)
+                    elif is_done:
+                        bg_color = QColor(240, 253, 244)
+                        border_color = QColor(74, 222, 128)
+                        text_color = QColor(22, 101, 52)
+                    elif is_active:
+                        bg_color = QColor(240, 249, 255)
+                        border_color = QColor(56, 189, 248)
+                        text_color = QColor(7, 89, 133)
+                    elif is_paused:
+                        bg_color = QColor(254, 252, 232)
+                        border_color = QColor(250, 204, 21)
+                        text_color = QColor(133, 77, 14)
+                    else:
+                        bg_color = QColor(248, 250, 252)
+                        border_color = QColor(203, 213, 225)
+                        text_color = QColor(51, 65, 85)
 
-                    rect = option.rect
-                    progress_width = int(rect.width() * (progress / 100.0))
-                    progress_rect = rect.adjusted(0, 0, progress_width - rect.width(), 0)
+                tag_height = 18
+                tag_y = rect.y() + (rect.height() - tag_height) / 2
+                
+                # Measure text width
+                font = painter.font()
+                font.setPointSize(9)
+                font.setBold(True)
+                painter.setFont(font)
+                metrics = painter.fontMetrics()
+                text_w = metrics.horizontalAdvance(status_text)
+                
+                tag_w = text_w + 10
+                tag_rect = QRectF(rect.x() + 2, tag_y, tag_w, tag_height)
+
+                painter.setBrush(QBrush(bg_color))
+                painter.setPen(QPen(border_color, 1))
+                painter.drawRoundedRect(tag_rect, 2, 2)
+
+                painter.setPen(text_color)
+                painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, status_text)
+                painter.restore()
+                return
+
+        # Column 3: Progress Bar (Linear precision bar)
+        elif col == 3:
+            if progress is not None and isinstance(progress, (int, float)):
+                bar_h = 14
+                bar_y = rect.y() + (rect.height() - bar_h) / 2
+                bar_w = rect.width() - 8
+                bar_rect = QRectF(rect.x() + 4, bar_y, bar_w, bar_h)
+
+                window_bg = option.palette.color(QPalette.ColorRole.Window)
+                is_dark = window_bg.lightness() < 128
+
+                # Background trough
+                if is_dark:
+                    trough_color = QColor(28, 34, 44, 140)
+                    trough_border = QColor(45, 55, 70, 120)
+                else:
+                    trough_color = QColor(226, 232, 240)
+                    trough_border = QColor(203, 213, 225)
+
+                painter.setPen(QPen(trough_border, 1))
+                painter.setBrush(QBrush(trough_color))
+                painter.drawRoundedRect(bar_rect, 2, 2)
+
+                # Active progress fill
+                fill_w = max(0, bar_w * (min(100.0, max(0.0, float(progress))) / 100.0))
+                if fill_w > 0:
+                    fill_rect = QRectF(rect.x() + 4, bar_y, fill_w, bar_h)
                     
-                    painter.save()
+                    is_error = "Error" in status or status == "Contains Errors"
+                    is_done = status in ("Completed", "Extracted")
+                    
+                    # Progress bar stays standard neutral/blue fill, or emerald on complete
+                    if is_done:
+                        g_start, g_end = (QColor("#22c55e"), QColor("#15803d")) if is_dark else (QColor("#16a34a"), QColor("#15803d"))
+                    elif is_error:
+                        # Muted slate/amber fill on error so it doesn't scream red alongside the red error tag
+                        g_start, g_end = (QColor("#64748b"), QColor("#475569")) if is_dark else (QColor("#94a3b8"), QColor("#64748b"))
+                    else:
+                        g_start, g_end = (QColor("#38bdf8"), QColor("#1d4ed8")) if is_dark else (QColor("#0284c7"), QColor("#0369a1"))
+
+                    p_grad = QLinearGradient(fill_rect.topLeft(), fill_rect.bottomRight())
+                    p_grad.setColorAt(0, g_start)
+                    p_grad.setColorAt(1, g_end)
+
                     painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QBrush(bg_color))
-                    painter.drawRect(progress_rect)
-                    painter.restore()
-        
+                    painter.setBrush(QBrush(p_grad))
+                    painter.drawRoundedRect(fill_rect, 2, 2)
+
+                # Progress text
+                prog_str = f"{progress:.1f}%" if status not in ("Extracted", "Extracting...", "Extract Error") else "--"
+                font = painter.font()
+                font.setPointSize(8)
+                font.setBold(True)
+                painter.setFont(font)
+                
+                # Text contrast logic based on fill width
+                if fill_w > bar_w * 0.4:
+                    text_color = QColor("#ffffff")
+                else:
+                    text_color = QColor("#ffffff") if is_dark else QColor("#1e293b")
+                    
+                painter.setPen(text_color)
+                painter.drawText(bar_rect, Qt.AlignmentFlag.AlignCenter, prog_str)
+                painter.restore()
+                return
+
+        painter.restore()
         super().paint(painter, option, index)
+
+ProgressBarDelegate = ModernTaskDelegate
 
 from curl_cffi import requests as curl_requests
 from cf_turnstile import TurnstileSolver
@@ -84,6 +323,7 @@ def load_settings():
         default_downloads = os.path.abspath(".")
         
     default_settings = {
+        "theme": "Dark",
         "default_save_dir": default_downloads,
         "max_workers": 3,
         "extract_after_download": False,
@@ -114,6 +354,44 @@ def save_settings(settings):
             json.dump(settings, f, indent=4)
     except Exception as e:
         logging.error("Failed to save settings: %s", e)
+
+def apply_theme(app, theme_name):
+    if theme_name == "Dark":
+        app.setStyle("Fusion")
+        dark_palette = QPalette()
+        dark_palette.setColor(QPalette.ColorRole.Window, QColor("#0f1115"))
+        dark_palette.setColor(QPalette.ColorRole.WindowText, QColor("#e6edf3"))
+        dark_palette.setColor(QPalette.ColorRole.Base, QColor("#0d0f14"))
+        dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#161922"))
+        dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#1c212c"))
+        dark_palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#f0f6fc"))
+        dark_palette.setColor(QPalette.ColorRole.Text, QColor("#e6edf3"))
+        dark_palette.setColor(QPalette.ColorRole.Button, QColor("#21262d"))
+        dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor("#c9d1d9"))
+        dark_palette.setColor(QPalette.ColorRole.BrightText, QColor("#ff7b72"))
+        dark_palette.setColor(QPalette.ColorRole.Link, QColor("#58a6ff"))
+        dark_palette.setColor(QPalette.ColorRole.Highlight, QColor("#1f6feb"))
+        dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+        app.setPalette(dark_palette)
+        app.setStyleSheet(DARK_THEME_QSS)
+    else:
+        app.setStyle("windowsvista" if sys.platform == "win32" else "Fusion")
+        light_palette = QPalette()
+        light_palette.setColor(QPalette.ColorRole.Window, QColor("#f6f8fa"))
+        light_palette.setColor(QPalette.ColorRole.WindowText, QColor("#1f2328"))
+        light_palette.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
+        light_palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#f6f8fa"))
+        light_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#24292f"))
+        light_palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#ffffff"))
+        light_palette.setColor(QPalette.ColorRole.Text, QColor("#1f2328"))
+        light_palette.setColor(QPalette.ColorRole.Button, QColor("#f6f8fa"))
+        light_palette.setColor(QPalette.ColorRole.ButtonText, QColor("#24292f"))
+        light_palette.setColor(QPalette.ColorRole.BrightText, QColor("#cf222e"))
+        light_palette.setColor(QPalette.ColorRole.Link, QColor("#0969da"))
+        light_palette.setColor(QPalette.ColorRole.Highlight, QColor("#0969da"))
+        light_palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+        app.setPalette(light_palette)
+        app.setStyleSheet(LIGHT_THEME_QSS)
 
 def format_error_message(error, max_length=160):
     text = str(error).strip()
@@ -164,18 +442,19 @@ class WarningDialog(QDialog):
         layout.addWidget(shortcuts_display)
         
         # Warning Section
-        warning_label = QLabel("<b>⚠️ VPN USERS WARNING ⚠️</b>")
-        warning_label.setStyleSheet("color: red; font-size: 14px;")
+        warning_label = QLabel("VPN USERS WARNING")
+        warning_label.setStyleSheet("color: #ff7b72; font-size: 13px; font-weight: bold;")
         warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(warning_label)
         
         warning_text = QLabel(
             "Cloudflare will aggressively block known VPN IPs. If your downloads are "
-            "failing or getting stuck, and you have tried to <i>Force Redownload</i> but "
-            "it keeps failing, <b>TURN OFF YOUR VPN</b>."
+            "failing or getting stuck, and you have tried to Force Redownload but "
+            "it keeps failing, please disable your VPN."
         )
         warning_text.setWordWrap(True)
-        warning_text.setStyleSheet("color: black; font-weight: bold; padding: 10px; background-color: #ffffff; border-radius: 5px;")
+        # Use a dynamic style based on the current palette instead of hardcoded white/black
+        warning_text.setStyleSheet("font-weight: 600; padding: 10px; border: 1px solid #f85149; border-radius: 6px; background-color: rgba(248, 81, 73, 0.1);")
         layout.addWidget(warning_text)
         
         # Don't show again checkbox
@@ -201,6 +480,13 @@ class SettingsDialog(QDialog):
         self.current_settings = current_settings
         
         layout = QFormLayout(self)
+        
+        # Application Theme
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Dark", "Light"])
+        current_theme = self.current_settings.get("theme", "Dark")
+        self.theme_combo.setCurrentText(current_theme)
+        layout.addRow("Application Theme:", self.theme_combo)
         
         # Save Directory
         dir_layout = QHBoxLayout()
@@ -274,6 +560,7 @@ class SettingsDialog(QDialog):
                 default_dir = os.path.abspath(".")
             
             self.dir_input.setText(default_dir)
+            self.theme_combo.setCurrentText("Dark")
             self.workers_spinbox.setValue(3)
             self.bandwidth_spinbox.setValue(0)
             self.captcha_spinbox.setValue(10)
@@ -287,6 +574,7 @@ class SettingsDialog(QDialog):
 
     def get_updated_settings(self):
         return {
+            "theme": self.theme_combo.currentText(),
             "default_save_dir": self.dir_input.text(),
             "max_workers": self.workers_spinbox.value(),
             "bandwidth_limit": self.bandwidth_spinbox.value(),
@@ -668,6 +956,22 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        view_menu = menu_bar.addMenu("&View")
+        
+        self.theme_menu = view_menu.addMenu("&Theme")
+        self.theme_dark_action = QAction("Dark Theme", self, checkable=True)
+        self.theme_dark_action.triggered.connect(lambda: self.switch_theme("Dark"))
+        self.theme_light_action = QAction("Light Theme", self, checkable=True)
+        self.theme_light_action.triggered.connect(lambda: self.switch_theme("Light"))
+        self.theme_menu.addAction(self.theme_dark_action)
+        self.theme_menu.addAction(self.theme_light_action)
+        
+        current_theme = self.settings.get("theme", "Dark")
+        if current_theme == "Dark":
+            self.theme_dark_action.setChecked(True)
+        else:
+            self.theme_light_action.setChecked(True)
+
         help_menu = menu_bar.addMenu("&Help")
         
         github_action = QAction("&GitHub Repository", self)
@@ -705,50 +1009,123 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(10, 2, 10, 8)
+        main_layout.setSpacing(6)
 
-        dir_layout = QHBoxLayout()
-        dir_layout.addWidget(QLabel("Base Save Directory:"))
+        # 1. TOP BENTO GRID: INGESTION HERO & STATUS
+        top_grid = QHBoxLayout()
+        top_grid.setSpacing(8)
+
+        # Left Bento Card: Target Directory & Quick Ingest
+        left_card = QFrame()
+        left_card.setObjectName("bentoCard")
+        left_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        left_layout = QVBoxLayout(left_card)
+        left_layout.setContentsMargins(10, 6, 10, 6)
+        left_layout.setSpacing(6)
+
+        left_header = QHBoxLayout()
+        left_header.setSpacing(6)
+        left_title = QLabel("DOWNLOAD QUEUE INGEST")
+        left_title.setObjectName("sectionTitle")
+        left_header.addWidget(left_title)
+        left_header.addStretch()
+
+        paste_btn = QPushButton("Paste Clipboard")
+        paste_btn.clicked.connect(self.paste_from_clipboard)
+        left_header.addWidget(paste_btn)
+        left_layout.addLayout(left_header)
+
+        self.text_links = QTextEdit()
+        self.text_links.setPlaceholderText("Paste one or multiple FuckingFast URLs here...")
+        self.text_links.setAcceptRichText(False)
+        self.text_links.setFixedHeight(77)
+        self.text_links.installEventFilter(self)
+        left_layout.addWidget(self.text_links)
+
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(6)
+        dir_label = QLabel("Save To:")
+        dir_label.setObjectName("statLabel")
+        dir_row.addWidget(dir_label)
+
         default_dir = self.settings.get("default_save_dir", os.path.join(os.path.expanduser("~"), "Downloads"))
         self.dir_input = QLineEdit(default_dir)
-        dir_layout.addWidget(self.dir_input)
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self.browse_dir)
-        dir_layout.addWidget(browse_btn)
-        main_layout.addLayout(dir_layout)
+        dir_row.addWidget(self.dir_input)
 
-        stats_layout = QHBoxLayout()
-        stats_layout.addWidget(QLabel("Paste Links Here (one per line):"))
-        
-        paste_btn = QPushButton("Paste from Clipboard")
-        paste_btn.clicked.connect(self.paste_from_clipboard)
-        stats_layout.addWidget(paste_btn)
-        
-        stats_layout.addStretch()
-        self.global_speed_label = QLabel("Global Speed: 0.00 MB/s")
-        self.global_speed_label.setStyleSheet("font-weight: bold; color: #2ecc71;")
-        stats_layout.addWidget(self.global_speed_label)
+        browse_btn = QPushButton("Browse")
+        browse_btn.clicked.connect(self.browse_dir)
+        dir_row.addWidget(browse_btn)
+
+        add_btn = QPushButton("Add to Queue")
+        add_btn.setObjectName("primaryBtn")
+        add_btn.clicked.connect(self.add_links)
+        dir_row.addWidget(add_btn)
+
+        left_layout.addLayout(dir_row)
+        top_grid.addWidget(left_card, stretch=65)
+
+        # Right Bento Card: Global Status & Stats
+        right_card = QFrame()
+        right_card.setObjectName("statusCard")
+        right_layout = QVBoxLayout(right_card)
+        right_layout.setContentsMargins(10, 6, 10, 6)
+        right_layout.setSpacing(4)
+
+        status_header = QHBoxLayout()
+        status_header.setSpacing(6)
+        right_title = QLabel("LIVE STATUS")
+        right_title.setObjectName("sectionTitle")
+        status_header.addWidget(right_title)
 
         self.schedule_indicator_label = QLabel("")
-        self.schedule_indicator_label.setStyleSheet("font-weight: bold; color: #f39c12;")
+        self.schedule_indicator_label.setStyleSheet("font-weight: bold; color: #f39c12; font-size: 11px;")
         self.schedule_indicator_label.setVisible(False)
-        stats_layout.addWidget(self.schedule_indicator_label)
-        main_layout.addLayout(stats_layout)
-        
-        self.text_links = QTextEdit()
-        self.text_links.setAcceptRichText(False)
-        self.text_links.setMaximumHeight(80)
-        # Override the paste event of QTextEdit or handle it through shortcuts if needed.
-        # However, QTextEdit natively handles pastes. To intercept rich text paste, 
-        # we can either subclass QTextEdit or just install an event filter.
-        # Let's install an event filter on text_links to intercept pastes.
-        self.text_links.installEventFilter(self)
-        main_layout.addWidget(self.text_links)
-        
-        add_btn = QPushButton("Add Links to Queue")
-        add_btn.setStyleSheet(button_style("#2e55cc"))
-        add_btn.clicked.connect(self.add_links)
-        main_layout.addWidget(add_btn)
+        status_header.addWidget(self.schedule_indicator_label)
 
+        status_header.addStretch()
+
+        self.global_speed_label = QLabel("0.00 MB/s")
+        self.global_speed_label.setObjectName("speedDisplay")
+        status_header.addWidget(self.global_speed_label)
+        right_layout.addLayout(status_header)
+
+        self.speed_graph = LiveSpeedGraph(max_points=35)
+        self.speed_graph.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        right_layout.addWidget(self.speed_graph, stretch=1)
+
+        stats_grid = QGridLayout()
+        stats_grid.setContentsMargins(0, 2, 0, 0)
+        stats_grid.setHorizontalSpacing(10)
+        stats_grid.setVerticalSpacing(1)
+
+        self.stat_active_val = QLabel("0")
+        self.stat_active_val.setObjectName("statValue")
+        stat_active_lbl = QLabel("Active")
+        stat_active_lbl.setObjectName("statLabel")
+        stats_grid.addWidget(self.stat_active_val, 0, 0)
+        stats_grid.addWidget(stat_active_lbl, 1, 0)
+
+        self.stat_queued_val = QLabel("0")
+        self.stat_queued_val.setObjectName("statValue")
+        stat_queued_lbl = QLabel("Queued")
+        stat_queued_lbl.setObjectName("statLabel")
+        stats_grid.addWidget(self.stat_queued_val, 0, 1)
+        stats_grid.addWidget(stat_queued_lbl, 1, 1)
+
+        self.stat_done_val = QLabel("0")
+        self.stat_done_val.setObjectName("statValue")
+        stat_done_lbl = QLabel("Done")
+        stat_done_lbl.setObjectName("statLabel")
+        stats_grid.addWidget(self.stat_done_val, 0, 2)
+        stats_grid.addWidget(stat_done_lbl, 1, 2)
+
+        right_layout.addLayout(stats_grid)
+        top_grid.addWidget(right_card, stretch=35)
+
+        main_layout.addLayout(top_grid, stretch=0)
+
+        # 2. MAIN QUEUE TREE
         self.tree = QTreeWidget()
         self.tree.setColumnCount(7)
         self.tree.setHeaderLabels(["Filename / Folder", "Sel", "Status", "Progress", "Speed", "ETA", "Size"])
@@ -757,7 +1134,7 @@ class MainWindow(QMainWindow):
         
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-        self.tree.setColumnWidth(1, 40)
+        self.tree.setColumnWidth(1, 38)
         self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         self.tree.header().setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
@@ -771,10 +1148,10 @@ class MainWindow(QMainWindow):
                 if width:
                     self.tree.setColumnWidth(i, width)
         else:
-            self.tree.setColumnWidth(0, 300)
-            self.tree.setColumnWidth(2, 100)
-            self.tree.setColumnWidth(3, 80)
-            self.tree.setColumnWidth(4, 80)
+            self.tree.setColumnWidth(0, 320)
+            self.tree.setColumnWidth(2, 110)
+            self.tree.setColumnWidth(3, 110)
+            self.tree.setColumnWidth(4, 90)
             self.tree.setColumnWidth(5, 80)
             self.tree.setColumnWidth(6, 120)
 
@@ -791,60 +1168,56 @@ class MainWindow(QMainWindow):
         
         self.tree.itemClicked.connect(self.handle_item_clicked)
         self.tree.itemSelectionChanged.connect(self.handle_item_selection_changed)
-        self.tree.setStyleSheet("""
-            QTreeView::indicator { width: 16px; height: 16px; }
-            QTreeView::item:selected { outline: none; }
-        """)
-        main_layout.addWidget(self.tree)
+        main_layout.addWidget(self.tree, stretch=1)
 
+        # 3. ACTION CONTROLS BAR
         action_layout = QHBoxLayout()
+        action_layout.setSpacing(8)
         
         self.select_all_btn = QPushButton("Select All")
         self.select_all_btn.clicked.connect(self.toggle_select_all)
         action_layout.addWidget(self.select_all_btn)
         
         self.start_btn = QPushButton("Start / Resume")
-        self.start_btn.setStyleSheet(button_style("#2ecc71"))
+        self.start_btn.setObjectName("successBtn")
         self.start_btn.clicked.connect(self.start_downloads)
         action_layout.addWidget(self.start_btn)
         
         self.pause_btn = QPushButton("Pause")
-        self.pause_btn.setStyleSheet(button_style("#f39c12"))
+        self.pause_btn.setObjectName("warningBtn")
         self.pause_btn.clicked.connect(self.pause_selected)
         action_layout.addWidget(self.pause_btn)
         
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setStyleSheet(button_style("#e74c3c"))
+        self.cancel_btn.setObjectName("dangerBtn")
         self.cancel_btn.clicked.connect(self.cancel_selected)
         action_layout.addWidget(self.cancel_btn)
         
         self.retry_btn = QPushButton("Retry")
-        self.retry_btn.setStyleSheet(button_style("#9b59b6"))
+        self.retry_btn.setObjectName("purpleBtn")
         self.retry_btn.clicked.connect(self.retry_selected)
         action_layout.addWidget(self.retry_btn)
 
         self.force_redownload_btn = QPushButton("Force Redownload")
-        self.force_redownload_btn.setStyleSheet(button_style("#300101"))
+        self.force_redownload_btn.setObjectName("darkRedBtn")
         self.force_redownload_btn.clicked.connect(self.force_redownload_selected)
         action_layout.addWidget(self.force_redownload_btn)
 
         self.copy_log_btn = QPushButton("Copy Error Details")
-        self.copy_log_btn.setStyleSheet(button_style("#555"))
         self.copy_log_btn.clicked.connect(self.copy_selected_error_log)
         action_layout.addWidget(self.copy_log_btn)
         
-        self.delete_btn = QPushButton("🗑️ Delete")
-        self.delete_btn.setStyleSheet(button_style("#34495e"))
+        self.delete_btn = QPushButton("Delete")
         self.delete_btn.clicked.connect(self.delete_selected)
         action_layout.addWidget(self.delete_btn)
         
         action_layout.addStretch()
         
-        self.extract_checkbox = QCheckBox("Extract after download")
+        self.extract_checkbox = QCheckBox("Auto-Extract")
         self.extract_checkbox.setChecked(self.settings.get("extract_after_download", False))
         action_layout.addWidget(self.extract_checkbox)
         
-        clear_btn = QPushButton("Clear Completed")
+        clear_btn = QPushButton("Clear Done")
         clear_btn.clicked.connect(self.clear_finished)
         action_layout.addWidget(clear_btn)
         
@@ -891,6 +1264,14 @@ class MainWindow(QMainWindow):
                 self.retry_selected()
                 return True
         return super().eventFilter(source, event)
+
+    def switch_theme(self, theme_name):
+        self.settings["theme"] = theme_name
+        save_settings(self.settings)
+        apply_theme(QApplication.instance(), theme_name)
+        if hasattr(self, 'theme_dark_action') and hasattr(self, 'theme_light_action'):
+            self.theme_dark_action.setChecked(theme_name == "Dark")
+            self.theme_light_action.setChecked(theme_name == "Light")
 
     def show_tree_context_menu(self, position):
         item = self.tree.itemAt(position)
@@ -1278,6 +1659,7 @@ class MainWindow(QMainWindow):
             # off-peak "schedule" — are preserved.
             self.settings.update(dialog.get_updated_settings())
             save_settings(self.settings)
+            self.switch_theme(self.settings.get("theme", "Dark"))
             self.max_workers = self.settings.get("max_workers", 3)
             new_timeout = self.settings.get("captcha_timeout", 10)
             self.turnstile_solver.TOKEN_TIMEOUT = new_timeout
@@ -1840,7 +2222,19 @@ class MainWindow(QMainWindow):
             task.tree_item.setData(0, Qt.ItemDataRole.UserRole, task.progress)
             task.tree_item.setData(1, Qt.ItemDataRole.UserRole, task.status)
                 
-        self.global_speed_label.setText(f"Global Speed: {global_speed:.2f} MB/s")
+        # Update telemetry stat counters
+        active_count = sum(1 for t in self.tasks if t.status in ("Downloading", "Starting...", "Solving CAPTCHA...", "Extracting..."))
+        queued_count = sum(1 for t in self.tasks if t.status in ("Queued", "Pending"))
+        done_count = sum(1 for t in self.tasks if t.status in ("Completed", "Extracted"))
+        self.stat_active_val.setText(str(active_count))
+        self.stat_queued_val.setText(str(queued_count))
+        self.stat_done_val.setText(str(done_count))
+
+        self.global_speed_label.setText(f"{global_speed:.2f} MB/s")
+        if hasattr(self, 'speed_graph'):
+            has_active_dl = any(t.status == "Downloading" for t in self.tasks) or global_speed > 0
+            if has_active_dl:
+                self.speed_graph.add_sample(global_speed)
             
         # Update top-level batch folders
         for i in range(self.tree.topLevelItemCount()):
@@ -2347,6 +2741,10 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    
+    # Load settings to apply initial theme
+    initial_settings = load_settings()
+    apply_theme(app, initial_settings.get("theme", "Dark"))
     
     # Determine base directory for assets
     if hasattr(sys, '_MEIPASS'):
