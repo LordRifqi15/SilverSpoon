@@ -2,13 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [v1.5.0] - 2026-08-21
 
 ### New Features
-* **Download Scheduler**: Added a `File -> Download Scheduler` dialog to define a download window (repeating weekly on chosen days, or a one-off date; windows may cross midnight) — times are set with clear hour / minute / AM–PM dropdowns. Downloads can also be scheduled individually via the right-click **Schedule download at specific interval** action, targeting only the selected download(s) instead of the whole queue. When the window opens, SilverSpoon checks connectivity and auto-starts the scheduled downloads, keeping the machine awake while it runs; when it closes, it pauses them and shows a summary (files completed, total GB, average/peak speed, duration) that is also appended to `~/.silverspoon_offpeak_report.jsonl`. On Windows the schedule can optionally register a **wake timer** that powers the PC on and launches the app at the window start; other platforms fall back to keep-awake while running. Backward-compatible: existing installs with no schedule configured behave exactly as before.
+* **Bento Grid UI & Dual Theme Engine**: Redesigned the application layout with a clean industrial Bento Card interface and introduced full Dark and Light theme support (switchable via `View -> Theme`), complete with bundled high-contrast checkbox and radio assets.
+* **Live Speed Graph**: Added an interactive rolling download speed graph widget inside the Live Status card that renders real-time bandwidth metrics with smooth antialiased gradients.
+* **Download Scheduler**: Added a `File -> Download Scheduler` dialog to define download windows (repeating weekly on chosen days, or a one-off date; windows may cross midnight) with clear 12-hour AM/PM time pickers. Individual tasks can also be scheduled via right-click **Schedule download at specific interval**. Includes a dedicated "Remove Schedule" button, date/day validation guards, Windows wake timers, and keep-awake power management.
+* **Armed Schedule Indicator**: Added a compact, theme-aware mini clock indicator to the Live Status header that displays the active schedule details on hover and opens the scheduler dialog on click.
 
 ### Fixes & Improvements
-* **Responsive Action Buttons**: The action buttons (Add, Start/Resume, Pause, Cancel, Retry, Force Redownload, Copy Error Details, Delete) now show hover, pressed, and disabled states, so a click gives immediate visual feedback instead of looking unresponsive. Button colors are unchanged.
+* **Smart Clipboard Link Extractor**: Pasting from clipboard now automatically parses rich HTML data to extract valid `http` download links from formatted webpage tables or text selections.
+* **Smart Startup Queue Folding**: Completed and extracted download batches are now collapsed by default when opening the application, keeping the active queue clean and organized.
+* **Build & Packaging**: Updated the PyInstaller build configuration to bundle `theme_assets/` and added GitHub Actions CI workflows for automated headless test execution and code compilation.
+
+
 
 ## [v1.4.0] - 2026-08-03
 

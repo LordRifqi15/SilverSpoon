@@ -431,7 +431,7 @@ import datetime as _dt
 import scheduler as offpeak
 from ui_style import button_style
 
-CURRENT_VERSION = "v1.4.0"
+CURRENT_VERSION = "v1.5.0"
 GITHUB_REPO = "billysams21/SilverSpoon"
 
 def get_settings_path():
@@ -991,7 +991,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SilverSpoon - UI (PyQt6)")
+        self.setWindowTitle(f"SilverSpoon {CURRENT_VERSION}")
         self.resize(1000, 650)
         
         if hasattr(sys, '_MEIPASS'):
@@ -1575,10 +1575,20 @@ class MainWindow(QMainWindow):
 
     def show_about_dialog(self):
         QMessageBox.about(self, "About SilverSpoon",
-            "<h3>SilverSpoon v1.4.0</h3>"
+            "<h3>SilverSpoon v1.5.0</h3>"
             "<p>A simple, fast bulk downloader for FuckingFast links developed by billysams21.</p>"
             "<p>Select your links, paste them in, and hit Add!</p>"
             "<p>Licensed under the GNU GPLv3.</p>"
+            "<hr>"
+            "<h4>Changelog (v1.5.0 - Short):</h4>"
+            "<ul>"
+            "<li><b>New:</b> Bento Card UI with full Dark and Light theme engine.</li>"
+            "<li><b>New:</b> Live rolling speed waveform graph in the status header.</li>"
+            "<li><b>New:</b> Download Scheduler with 12h time pickers, per-download scheduling, and wake timers.</li>"
+            "<li><b>New:</b> Armed schedule clock indicator with live hover info.</li>"
+            "<li><b>Fix:</b> Smart clipboard link extractor supporting rich HTML tables.</li>"
+            "<li><b>Fix:</b> Completed batches automatically collapse on app startup.</li>"
+            "</ul>"
             "<hr>"
             "<h4>Changelog (v1.4.0 - Short):</h4>"
             "<ul>"
@@ -1590,23 +1600,6 @@ class MainWindow(QMainWindow):
             "<li><b>Fix:</b> More accurate ETA calculation and smarter folder name adjustment.</li>"
             "</ul>"
             "<hr>"
-            "<h4>Changelog (v1.3.0 - Short):</h4>"
-            "<ul>"
-            "<li><b>New:</b> Built-in auto-updater for Windows executables.</li>"
-            "<li><b>New:</b> VPN warning dialog to help with Cloudflare blocking.</li>"
-            "<li><b>New:</b> Default save directory smartly falls back to user Downloads folder.</li>"
-            "<li><b>New:</b> Reset Settings to Defaults button.</li>"
-            "<li><b>New:</b> Toggle pause/resume with the Spacebar.</li>"
-            "<li><b>Fix:</b> Better directory creation error handling during downloads.</li>"
-            "</ul>"
-            "<hr>"
-            "<h4>Changelog (v1.2.1 - Short):</h4>"
-            "<ul>"
-            "<li><b>New:</b> Right-click context menu and keyboard shortcuts.</li>"
-            "<li><b>New:</b> Force Redownload action.</li>"
-            "<li><b>New:</b> Hover error tooltips and 'Copy Error Details' log extraction.</li>"
-            "<li><b>New:</b> Extraction support for Linux and macOS.</li>"
-            "</ul>"
             "<p><i>See CHANGELOG.md for full details.</i></p>"
         )
 
