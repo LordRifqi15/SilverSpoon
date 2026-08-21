@@ -1,5 +1,24 @@
 # Design system themes and stylesheets for SilverSpoon (PyQt6)
 # Industrial / Swiss clean aesthetic with crisp, subtle borders and minimal rounding
+import os as _os
+import sys as _sys
+
+# Support both dev (..\\theme_assets) and PyInstaller frozen (_MEIPASS/theme_assets)
+if getattr(_sys, "_MEIPASS", None):
+    _ASSET_DIR = _os.path.join(_sys._MEIPASS, "theme_assets").replace("\\", "/")
+else:
+    _ASSET_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "theme_assets").replace("\\", "/")
+
+def _asset(name: str) -> str:
+    return f"{_ASSET_DIR}/{name}"
+
+# Pre-resolve png paths for QSS image urls (Qt requires file paths, data: URIs are unreliable)
+_CHECK_WHITE = _asset("check_white.png")
+_CHECK_GREY = _asset("check_grey.png")
+_CHECK_GREY_DARK = _asset("check_grey_dark.png")
+_DOT_WHITE = _asset("dot_white.png")
+_DOT_GREY = _asset("dot_grey.png")
+_DOT_GREY_DARK = _asset("dot_grey_dark.png")
 
 DARK_THEME_QSS = """
 QMainWindow {
@@ -243,6 +262,10 @@ QCheckBox {
     spacing: 6px;
 }
 
+QCheckBox:disabled {
+    color: #57606a;
+}
+
 QCheckBox::indicator {
     width: 14px;
     height: 14px;
@@ -258,7 +281,96 @@ QCheckBox::indicator:hover {
 QCheckBox::indicator:checked {
     background-color: #1f6feb;
     border: 1px solid #58a6ff;
-    image: none;
+    image: url("__CHECK_WHITE__");
+}
+
+QCheckBox::indicator:disabled {
+    border: 1px solid #21262d;
+    background-color: #161b22;
+}
+
+QCheckBox::indicator:checked:disabled {
+    background-color: #21262d;
+    border: 1px solid #30363d;
+    image: url("__CHECK_GREY_DARK__");
+}
+
+/* RadioButton */
+QRadioButton {
+    color: #c9d1d9;
+    font-weight: 500;
+    spacing: 6px;
+}
+
+QRadioButton:disabled {
+    color: #57606a;
+}
+
+QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    border: 1px solid #303746;
+    background-color: #0a0c0f;
+}
+
+QRadioButton::indicator:hover {
+    border: 1px solid #58a6ff;
+}
+
+QRadioButton::indicator:checked {
+    background-color: #1f6feb;
+    border: 1px solid #58a6ff;
+    image: url("__DOT_WHITE__");
+}
+
+QRadioButton::indicator:disabled {
+    border: 1px solid #21262d;
+    background-color: #161b22;
+}
+
+QRadioButton::indicator:checked:disabled {
+    background-color: #21262d;
+    border: 1px solid #30363d;
+    image: url("__DOT_GREY_DARK__");
+}
+
+/* GroupBox & DateEdit */
+QGroupBox {
+    font-weight: 700;
+    font-size: 11px;
+    color: #8b949e;
+    border: 1px solid #222731;
+    border-radius: 3px;
+    margin-top: 14px;
+    padding-top: 14px;
+    background-color: #101318;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
+    background-color: #0d0f12;
+}
+
+QDateEdit {
+    background-color: #0a0c0f;
+    border: 1px solid #222731;
+    border-radius: 2px;
+    padding: 4px 6px;
+    color: #f0f6fc;
+}
+
+QDateEdit:focus {
+    border: 1px solid #58a6ff;
+}
+
+QDateEdit:disabled {
+    background-color: #161b22;
+    border-color: #21262d;
+    color: #484f58;
 }
 
 /* Menu & MenuBar */
@@ -587,6 +699,10 @@ QCheckBox {
     spacing: 6px;
 }
 
+QCheckBox:disabled {
+    color: #8c959f;
+}
+
 QCheckBox::indicator {
     width: 14px;
     height: 14px;
@@ -602,7 +718,96 @@ QCheckBox::indicator:hover {
 QCheckBox::indicator:checked {
     background-color: #0969da;
     border: 1px solid #0969da;
-    image: none;
+    image: url("__CHECK_WHITE__");
+}
+
+QCheckBox::indicator:disabled {
+    border: 1px solid #e1e4e8;
+    background-color: #f6f8fa;
+}
+
+QCheckBox::indicator:checked:disabled {
+    background-color: #d0d7de;
+    border: 1px solid #d0d7de;
+    image: url("__CHECK_GREY__");
+}
+
+/* RadioButton */
+QRadioButton {
+    color: #24292f;
+    font-weight: 500;
+    spacing: 6px;
+}
+
+QRadioButton:disabled {
+    color: #8c959f;
+}
+
+QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    border: 1px solid #d0d7de;
+    background-color: #ffffff;
+}
+
+QRadioButton::indicator:hover {
+    border: 1px solid #0969da;
+}
+
+QRadioButton::indicator:checked {
+    background-color: #0969da;
+    border: 1px solid #0969da;
+    image: url("__DOT_WHITE__");
+}
+
+QRadioButton::indicator:disabled {
+    border: 1px solid #e1e4e8;
+    background-color: #f6f8fa;
+}
+
+QRadioButton::indicator:checked:disabled {
+    background-color: #d0d7de;
+    border: 1px solid #d0d7de;
+    image: url("__DOT_GREY__");
+}
+
+/* GroupBox & DateEdit */
+QGroupBox {
+    font-weight: 700;
+    font-size: 11px;
+    color: #57606a;
+    border: 1px solid #d0d7de;
+    border-radius: 3px;
+    margin-top: 14px;
+    padding-top: 14px;
+    background-color: #ffffff;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
+    background-color: #f6f8fa;
+}
+
+QDateEdit {
+    background-color: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 2px;
+    padding: 4px 6px;
+    color: #1f2328;
+}
+
+QDateEdit:focus {
+    border: 1px solid #0969da;
+}
+
+QDateEdit:disabled {
+    background-color: #f6f8fa;
+    border-color: #e1e4e8;
+    color: #8c959f;
 }
 
 /* Menu & MenuBar */
@@ -699,4 +904,18 @@ QToolTip {
     padding: 5px 8px;
 }
 """
+
+# Resolve placeholder image urls to real file paths (must happen after both QSS blocks are defined)
+DARK_THEME_QSS = (
+    DARK_THEME_QSS.replace("__CHECK_WHITE__", _CHECK_WHITE)
+    .replace("__CHECK_GREY_DARK__", _CHECK_GREY_DARK)
+    .replace("__DOT_WHITE__", _DOT_WHITE)
+    .replace("__DOT_GREY_DARK__", _DOT_GREY_DARK)
+)
+LIGHT_THEME_QSS = (
+    LIGHT_THEME_QSS.replace("__CHECK_WHITE__", _CHECK_WHITE)
+    .replace("__CHECK_GREY__", _CHECK_GREY)
+    .replace("__DOT_WHITE__", _DOT_WHITE)
+    .replace("__DOT_GREY__", _DOT_GREY)
+)
 

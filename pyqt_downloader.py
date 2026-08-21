@@ -33,7 +33,7 @@ from PyQt6.QtGui import (
     QKeySequence, QPalette, QPainter, QLinearGradient, QPen, QFont,
     QPainterPath
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QRectF, QSize, QPointF, QDate
+from PyQt6.QtCore import Qt, QTimer, QUrl, QEvent, QRectF, QSize, QPointF, QDate, pyqtSignal
 from theme_styles import DARK_THEME_QSS, LIGHT_THEME_QSS
 
 class LiveSpeedGraph(QWidget):
@@ -122,6 +122,132 @@ class LiveSpeedGraph(QWidget):
         painter.setPen(QPen(line_color, 1.5))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(line_path)
+
+
+class ScheduleDot(QWidget):
+    """Alt C — mini clock icon (20px). Hidden when disabled, hover shows
+    the full schedule. Hands point to the window's start time so the icon
+    itself is informational at a glance with a crisp, high-visibility outline."""
+
+    clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(20, 20)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._armed_text = ""
+        self._window_active = False
+        self._start_hhmm = ""  # "HH:mm" 24h for hand angles
+
+    def set_state(self, text: str, window_active: bool = False, start_hhmm: str = ""):
+        self._armed_text = text or ""
+        self._window_active = bool(window_active)
+        self._start_hhmm = str(start_hhmm or "")
+        armed = bool(self._armed_text)
+        self.setVisible(armed)
+        if armed:
+            # Multi-line hover: schedule is the hero, state + action underneath
+            state_line = "Window open • downloading" if self._window_active else "Waiting for window"
+            tip = f"{self._armed_text}\n{state_line}\nClick to edit schedule"
+            self.setToolTip(tip)
+        else:
+            self.setToolTip("")
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        if not self._armed_text:
+            return
+        import math
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        window_bg = self.palette().color(QPalette.ColorRole.Window)
+        is_dark = window_bg.lightness() < 128
+        rect = self.rect()
+        cx = rect.width() / 2.0
+        cy = rect.height() / 2.0
+
+        # Outer subtle halo
+        halo_col = QColor(63, 185, 80, 35) if self._window_active else QColor(88, 166, 255, 30)
+        if not is_dark:
+            halo_col = QColor(26, 127, 55, 25) if self._window_active else QColor(9, 105, 218, 20)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(halo_col))
+        painter.drawEllipse(QRectF(cx - 9.5, cy - 9.5, 19, 19))
+
+        # Distinct high-contrast outer bezel/outline
+        r = 7.2  # dial radius
+        face_fill = QColor(13, 17, 23) if is_dark else QColor(255, 255, 255)
+        if self._window_active:
+            bezel_color = QColor(63, 185, 80) if is_dark else QColor(26, 127, 55)
+        else:
+            bezel_color = QColor(88, 166, 255) if is_dark else QColor(9, 105, 218)
+
+        painter.setBrush(QBrush(face_fill))
+        bezel_pen = QPen(bezel_color, 1.6)
+        painter.setPen(bezel_pen)
+        painter.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
+
+        # Ticks at 12/3/6/9 — high-contrast crisp marks
+        tick_col = QColor(139, 148, 158, 200) if is_dark else QColor(101, 109, 118, 190)
+        painter.setPen(QPen(tick_col, 1))
+        # 12 o'clock
+        painter.drawLine(QPointF(cx, cy - r + 1.2), QPointF(cx, cy - r + 3.0))
+        # 3
+        painter.drawLine(QPointF(cx + r - 1.2, cy), QPointF(cx + r - 3.0, cy))
+        # 6
+        painter.drawLine(QPointF(cx, cy + r - 1.2), QPointF(cx, cy + r - 3.0))
+        # 9
+        painter.drawLine(QPointF(cx - r + 1.2, cy), QPointF(cx - r + 3.0, cy))
+
+        # Resolve hand angles from start time; fallback to 10:10 (readable V)
+        try:
+            hh_s, mm_s = self._start_hhmm.split(":")
+            hh, mm = int(hh_s), int(mm_s)
+        except Exception:
+            hh, mm = 10, 10
+            if self._start_hhmm == "" and self._armed_text:
+                pass
+        hh = max(0, min(23, hh))
+        mm = max(0, min(59, mm))
+        minute_angle_deg = mm * 6.0  # 0 at 12, clockwise
+        hour_angle_deg = (hh % 12) * 30.0 + mm * 0.5
+
+        def polar(angle_deg, length):
+            a = math.radians(angle_deg)
+            return cx + math.sin(a) * length, cy - math.cos(a) * length
+
+        hand_col = QColor(240, 246, 252) if is_dark else QColor(31, 35, 40)
+        hand_active = QColor(63, 185, 80) if is_dark else QColor(26, 127, 55)
+
+        # Hour hand — bold, shorter
+        hx, hy = polar(hour_angle_deg, 3.8)
+        _pen = QPen(hand_active if self._window_active else hand_col, 1.6)
+        _pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(_pen)
+        painter.drawLine(QPointF(cx, cy), QPointF(hx, hy))
+
+        # Minute hand — longer, crisp
+        mx, my = polar(minute_angle_deg, 5.2)
+        m_col = hand_col if not self._window_active else (QColor(180, 240, 195) if is_dark else QColor(35, 90, 45))
+        _pen2 = QPen(m_col, 1.2)
+        _pen2.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(_pen2)
+        painter.drawLine(QPointF(cx, cy), QPointF(mx, my))
+
+        # Center pin
+        pin_fill = hand_active if self._window_active else bezel_color
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(pin_fill))
+        painter.drawEllipse(QRectF(cx - 1.3, cy - 1.3, 2.6, 2.6))
+        if is_dark:
+            painter.setBrush(QBrush(QColor(255, 255, 255, 120)))
+            painter.drawEllipse(QRectF(cx - 0.6, cy - 0.8, 1.0, 1.0))
+
 
 class ModernTaskDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
@@ -299,7 +425,7 @@ ProgressBarDelegate = ModernTaskDelegate
 
 from curl_cffi import requests as curl_requests
 from cf_turnstile import TurnstileSolver
-from PyQt6.QtCore import QMetaObject, Q_ARG, pyqtSignal
+from PyQt6.QtCore import QMetaObject, Q_ARG
 from update_logic import UpdateCheckerThread, UpdateDownloaderDialog
 import datetime as _dt
 import scheduler as offpeak
@@ -1078,10 +1204,10 @@ class MainWindow(QMainWindow):
         right_title.setObjectName("sectionTitle")
         status_header.addWidget(right_title)
 
-        self.schedule_indicator_label = QLabel("")
-        self.schedule_indicator_label.setStyleSheet("font-weight: bold; color: #f39c12; font-size: 11px;")
-        self.schedule_indicator_label.setVisible(False)
-        status_header.addWidget(self.schedule_indicator_label)
+        self.schedule_dot = ScheduleDot()
+        self.schedule_dot.clicked.connect(self.open_queue_scheduler)
+        self.schedule_dot.setVisible(False)
+        status_header.addWidget(self.schedule_dot)
 
         status_header.addStretch()
 
@@ -1403,6 +1529,15 @@ class MainWindow(QMainWindow):
             elif task.status == "Extracting...":
                 task.status = "Completed"
 
+        # Collapse batches that are already completed on app startup
+        for i in range(self.tree.topLevelItemCount()):
+            batch_item = self.tree.topLevelItem(i)
+            folder_tasks = [t for t in self.tasks if t.folder_name == batch_item.text(0)]
+            if folder_tasks and all(t.status in ("Completed", "Extracted") for t in folder_tasks):
+                batch_item.setExpanded(False)
+            else:
+                batch_item.setExpanded(True)
+
     def import_links_from_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Import Links", "", "Text Files (*.txt);;All Files (*)")
         if file_path:
@@ -1709,10 +1844,14 @@ class MainWindow(QMainWindow):
         self._refresh_schedule_indicator()
 
     def _refresh_schedule_indicator(self):
-        """Update the armed-schedule label; hide it when nothing is scheduled."""
+        """Alt C: compact dot. Hidden when disabled; hover shows the full text."""
         text = offpeak.describe_schedule(self.schedule)
-        self.schedule_indicator_label.setText(f"⏰ {text}")
-        self.schedule_indicator_label.setVisible(bool(text))
+        try:
+            window_active = bool(self.offpeak_controller._active)
+        except Exception:
+            window_active = False
+        start = self.schedule.get("start", "") if isinstance(self.schedule, dict) else ""
+        self.schedule_dot.set_state(text, window_active=window_active, start_hhmm=start)
 
     def _scheduled_tasks(self):
         """Tasks the active schedule targets: all, or only the chosen uids."""
@@ -1744,6 +1883,10 @@ class MainWindow(QMainWindow):
             self._offpeak_open(now)
         elif edge == "close":
             self._offpeak_close(now)
+        # Keep the dot's green/blue tint in sync with the controller's
+        # active edge without cluttering the header.
+        if edge is not None:
+            self._refresh_schedule_indicator()
 
     def _offpeak_open(self, now):
         # Probe connectivity off the GUI thread (~1.5s) so the poll timer never
