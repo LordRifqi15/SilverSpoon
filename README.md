@@ -1,8 +1,8 @@
 # SilverSpoon (previously FitGirlDownloader)
 
-> **Note:** Currently, this tool ONLY supports `fuckingfast.co` links (often used by FitGirl Repacks). Support for other hosts may be added in the future.
+> **Note:** Currently supports `fuckingfast.co` and `datanodes.to` links (commonly used by FitGirl Repacks and direct download mirrors). Support for additional hosts may be added in the future.
 
-A Python-based bulk downloader designed to bypass Cloudflare protections on file-hosting sites like *fuckingfast.co*. It automates the process of extracting direct download links and supports concurrent downloading with pause and resume capabilities.
+A Python-based bulk downloader designed to bypass Cloudflare protections on file-hosting sites like *fuckingfast.co* and *datanodes.to*. It automates the process of extracting direct download links and supports concurrent downloading with pause and resume capabilities.
 
 ## Features
 

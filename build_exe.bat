@@ -3,6 +3,9 @@ echo Building SilverSpoon distribution with bundled Playwright Chromium...
 echo This can take several minutes and produces a large folder.
 echo.
 
+taskkill /f /im SilverSpoon.exe >nul 2>&1
+powershell -NoProfile -Command "Get-Process -Name 'chrome*' -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*FitGirlDownloader*' } | Stop-Process -Force -ErrorAction SilentlyContinue"
+
 pyinstaller --noconfirm --clean --noconsole --onedir --icon="SilverSpoon.ico" --add-binary "7z.exe;." --add-binary "7z.dll;." --add-data "SilverSpoon.ico;." --add-data "SilverSpoon.png;." --add-data "theme_assets;theme_assets" --copy-metadata "curl_cffi" --exclude-module "cv2" --exclude-module "numpy" --exclude-module "matplotlib" --exclude-module "scipy" --exclude-module "pandas" --exclude-module "torch" --exclude-module "torchvision" --exclude-module "IPython" --exclude-module "PIL" --exclude-module "Pillow" --exclude-module "tkinter" --exclude-module "unittest" --exclude-module "pytest" --exclude-module "PyQt6.QtPdf" --exclude-module "PyQt6.QtNetwork" --name "SilverSpoon" pyqt_downloader.py
 if errorlevel 1 goto :error
 

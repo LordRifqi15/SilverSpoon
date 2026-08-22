@@ -431,7 +431,7 @@ import datetime as _dt
 import scheduler as offpeak
 from ui_style import button_style
 
-CURRENT_VERSION = "v1.5.0"
+CURRENT_VERSION = "v1.5.1"
 GITHUB_REPO = "billysams21/SilverSpoon"
 
 def get_settings_path():
@@ -889,11 +889,13 @@ class DownloadSchedulerDialog(QDialog):
 
 class DownloadTask:
     def __init__(self, link, base_save_dir, folder_name=None):
+        import urllib.parse
         self.link = link.strip()
         self.base_save_dir = base_save_dir
         
-        self.file_id = self.link.split('/')[-1].split('#')[0]
-        self.filename = self.link.split('#')[-1] if '#' in self.link else self.file_id
+        raw_part = self.link.split('#')[-1] if '#' in self.link else self.link.rstrip('/').split('/')[-1]
+        self.filename = urllib.parse.unquote(raw_part)
+        self.file_id = self.link.rstrip('/').split('/')[-1].split('#')[0]
         
         if folder_name:
             self.folder_name = folder_name
@@ -1580,10 +1582,18 @@ class MainWindow(QMainWindow):
 
     def show_about_dialog(self):
         QMessageBox.about(self, "About SilverSpoon",
-            "<h3>SilverSpoon v1.5.0</h3>"
-            "<p>A simple, fast bulk downloader for FuckingFast links developed by billysams21.</p>"
+            "<h3>SilverSpoon v1.5.1</h3>"
+            "<p>A simple, fast bulk downloader for FuckingFast and DataNodes links developed by billysams21.</p>"
             "<p>Select your links, paste them in, and hit Add!</p>"
             "<p>Licensed under the GNU GPLv3.</p>"
+            "<hr>"
+            "<h4>Changelog (v1.5.1 - Short):</h4>"
+            "<ul>"
+            "<li><b>New:</b> Added support for DataNodes (<code>datanodes.to</code>) links with auto Turnstile & countdown bypass.</li>"
+            "<li><b>New:</b> Smart URL and filename unquoting for clean batch folders and task names.</li>"
+            "<li><b>Fix:</b> Optimized executable build footprint, saving ~187 MB uncompressed.</li>"
+            "<li><b>Fix:</b> Build script safety to prevent binary lock errors during packaging.</li>"
+            "</ul>"
             "<hr>"
             "<h4>Changelog (v1.5.0 - Short):</h4>"
             "<ul>"
@@ -1593,16 +1603,6 @@ class MainWindow(QMainWindow):
             "<li><b>New:</b> Armed schedule clock indicator with live hover info.</li>"
             "<li><b>Fix:</b> Smart clipboard link extractor supporting rich HTML tables.</li>"
             "<li><b>Fix:</b> Completed batches automatically collapse on app startup.</li>"
-            "</ul>"
-            "<hr>"
-            "<h4>Changelog (v1.4.0 - Short):</h4>"
-            "<ul>"
-            "<li><b>New:</b> Bandwidth limiter in Settings to cap global download speed.</li>"
-            "<li><b>New:</b> Built-in Cloudflare Turnstile CAPTCHA solver using a hidden Chromium browser.</li>"
-            "<li><b>New:</b> Visual progress bars drawn directly behind file/folder names.</li>"
-            "<li><b>New:</b> Manual \"Extract Now\" context menu action for downloaded batches.</li>"
-            "<li><b>Fix:</b> Stabilized download speed calculation with a 3-second rolling average.</li>"
-            "<li><b>Fix:</b> More accurate ETA calculation and smarter folder name adjustment.</li>"
             "</ul>"
             "<hr>"
             "<p><i>See CHANGELOG.md for full details.</i></p>"
@@ -2022,14 +2022,16 @@ class MainWindow(QMainWindow):
         # Try to guess a folder name from the first link
         suggested_folder = ""
         first_link = links[0]
-        first_filename = first_link.split('#')[-1] if '#' in first_link else first_link.split('/')[-1].split('#')[0]
+        raw_first = first_link.split('#')[-1] if '#' in first_link else first_link.rstrip('/').split('/')[-1]
+        import urllib.parse
+        first_filename = urllib.parse.unquote(raw_first)
         match = re.search(r'(.*?)(\.part\d+\.rar|\.rar)$', first_filename, re.IGNORECASE)
         if match:
             suggested_folder = match.group(1).strip('._-')
         else:
             suggested_folder = first_filename.rsplit('.', 1)[0]
             
-        suggested_folder = suggested_folder.replace('_--_fitgirl-repacks.site', '')
+        suggested_folder = suggested_folder.replace('_--_fitgirl-repacks.site', '').replace('_--_', ' ').replace('_', ' ').strip()
 
         folder_name, ok = QInputDialog.getText(
             self, 

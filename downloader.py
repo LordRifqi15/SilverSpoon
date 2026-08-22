@@ -6,6 +6,7 @@ import time
 import sys
 import os
 import re
+import urllib.parse
 
 from curl_cffi import requests as curl_requests
 from cf_turnstile import TurnstileSolver
@@ -36,8 +37,9 @@ class DownloadManager:
             return None, {}, ""
 
     def download_file(self, link):
-        filename = link.split('#')[-1] if '#' in link else link.split('/')[-1]
-        file_id = link.split('/')[-1].split('#')[0]
+        raw_name = link.split('#')[-1] if '#' in link else link.rstrip('/').split('/')[-1]
+        filename = urllib.parse.unquote(raw_name)
+        file_id = link.rstrip('/').split('/')[-1].split('#')[0]
         
         dl_url, cookies, user_agent = self.extract_direct_url(link)
         if not dl_url:

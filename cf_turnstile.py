@@ -219,7 +219,7 @@ class TurnstileSolver:
         except Exception:
             page_url = ""
 
-        if not page_url.startswith("https://fuckingfast.co/"):
+        if not (page_url.startswith("https://fuckingfast.co/") or "datanodes.to" in page_url):
             logger.warning("TurnstileSolver: unexpected URL after navigation: %s; tab might be hijacked or blank.", page_url)
             self._tab = None
             raise RuntimeError("Tab hijacked or failed to load correct URL.")
@@ -227,8 +227,201 @@ class TurnstileSolver:
         logger.info("TurnstileSolver: page loaded: %s", page_url)
         return tab
 
-    async def _resolve_direct_link_async(self, link):
+    async def _resolve_fuckingfast_async(self, link, tab):
         file_id = link.split("/")[-1].split("#")[0]
+        challenge_state = await tab.evaluate(
+            "JSON.stringify({token:window.turnstileToken||"
+            "document.querySelector('[name=\"cf-turnstile-response\"]')?.value||'',"
+            "hasWidget:!!(document.querySelector('.cf-turnstile')||"
+            "document.querySelector('[name=\"cf-turnstile-response\"]')||"
+            "document.querySelector('iframe[src*=\"turnstile\"]'))})",
+            return_by_value=True,
+        )
+        try:
+            challenge_state = json.loads(challenge_state) if isinstance(challenge_state, str) else {}
+        except (TypeError, ValueError):
+            challenge_state = {}
+
+        token = challenge_state.get("token", "")
+        has_widget = bool(challenge_state.get("hasWidget"))
+        logger.info("TurnstileSolver (FuckingFast): has_widget=%s token_present=%s", has_widget, bool(len(token) > 20))
+
+        if has_widget and len(token) <= 20:
+            for attempt in range(self.MAX_ATTEMPTS):
+                for i in range(self.TOKEN_TIMEOUT):
+                    if self._stop_requested:
+                        raise RuntimeError("Solver stopped while waiting for token.")
+                    try:
+                        raw = await asyncio.wait_for(tab.evaluate(
+                            "JSON.stringify(window.turnstileToken || "
+                            "document.querySelector('[name=\"cf-turnstile-response\"]')?.value || null)",
+                            return_by_value=True,
+                        ), timeout=2.0)
+                    except Exception:
+                        raw = None
+                        
+                    if isinstance(raw, str):
+                        try:
+                            token = json.loads(raw)
+                        except (TypeError, ValueError):
+                            token = None
+                        if isinstance(token, str) and len(token) > 20:
+                            logger.info("TurnstileSolver (FuckingFast): token received after %ss", i + 1)
+                            break
+                    if i % 5 == 0:
+                        logger.info("TurnstileSolver (FuckingFast): waiting for token; attempt=%s elapsed=%ss", attempt + 1, i)
+                    await asyncio.sleep(1)
+                    
+                if isinstance(token, str) and len(token) > 20:
+                    break
+                    
+                if attempt < self.MAX_ATTEMPTS - 1:
+                    logger.warning("TurnstileSolver (FuckingFast): no token yet; recreating tab and retrying navigation")
+                    self._tab = None
+                    tab = await self._navigate(link)
+                    await asyncio.sleep(3)
+
+            if not isinstance(token, str) or len(token) <= 20:
+                raise RuntimeError(
+                    f"Cloudflare Turnstile did not produce a token after {self.TOKEN_TIMEOUT} seconds. "
+                    "Your IP may be flagged or the site may require an interactive challenge."
+                )
+
+        fetch_js = (
+            "(async()=>{const r=await fetch('/f/" + file_id + "/go',"
+            "{method:'POST',headers:{'HX-Request':'true','HX-Target':'',"
+            "'HX-Current-URL':'" + link + "','Referer':'" + link + "'},"
+            "body:new URLSearchParams({'cf-turnstile-response':window.turnstileToken||"
+            "document.querySelector('[name=\"cf-turnstile-response\"]')?.value||''})});"
+            "const h=r.headers.get('Hx-Redirect')||r.headers.get('hx-redirect');"
+            "const t=await r.text();"
+            "return JSON.stringify({status:r.status,hxRedirect:h,"
+            "bodyLen:t.length,bodyHead:t.substring(0,200)});})()"
+        )
+
+        raw = await tab.evaluate(fetch_js, await_promise=True, return_by_value=True)
+
+        if isinstance(raw, dict):
+            result = raw
+        elif isinstance(raw, str):
+            try:
+                result = json.loads(raw)
+            except Exception:
+                result = json.loads(raw.replace("\\'", "'").replace('\\"', '"'))
+        else:
+            raise RuntimeError(f"Unexpected fetch result type: {type(raw)}")
+
+        status = result.get("status")
+        direct_url = result.get("hxRedirect")
+        logger.info(
+            "TurnstileSolver (FuckingFast): POST /go status=%s redirect=%s body=%s",
+            status, bool(direct_url), result.get("bodyHead", "")[:200],
+        )
+        if status != 200 or not direct_url:
+            raise RuntimeError(
+                f"Could not resolve direct link. POST /go returned HTTP {status}. "
+                f"Response: {result.get('bodyHead', '')}"
+            )
+        return direct_url
+
+    async def _resolve_datanodes_async(self, link, tab):
+        direct_url = None
+
+        def on_network_response(event: cdp.network.ResponseReceived):
+            nonlocal direct_url
+            url = event.response.url
+            if any(keyword in url for keyword in ['dlproxy', '/d/', '.rar']) and 'datanodes.to' not in url:
+                direct_url = url
+                logger.info("TurnstileSolver (DataNodes): captured direct URL via CDP network: %s", direct_url[:60])
+
+        tab.add_handler(cdp.network.ResponseReceived, on_network_response)
+        await tab.send(cdp.network.enable())
+
+        # Intercept fetch responses in page context as well
+        await tab.evaluate("""
+            (() => {
+                window.__dn_direct_url = null;
+                const origFetch = window.fetch;
+                window.fetch = async function(...args) {
+                    const resp = await origFetch.apply(this, args);
+                    try {
+                        const clone = resp.clone();
+                        const data = await clone.json();
+                        if (data && data.url) {
+                            window.__dn_direct_url = decodeURIComponent(data.url);
+                        }
+                    } catch(e) {}
+                    return resp;
+                };
+            })();
+        """)
+
+        logger.info("TurnstileSolver (DataNodes): waiting for Turnstile & Free Download button...")
+        clicked_free = False
+        button_timeout = max(30, self.TOKEN_TIMEOUT + 15)
+        for i in range(button_timeout):
+            if self._stop_requested:
+                raise RuntimeError("Solver stopped while waiting for DataNodes download button.")
+            await asyncio.sleep(1)
+            raw = await tab.evaluate("""
+                JSON.stringify((() => {
+                    const btns = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
+                    for (const b of btns) {
+                        const txt = (b.innerText || b.value || '').trim();
+                        if (/^Free Download/i.test(txt) || txt.startsWith('Free Download')) {
+                            b.scrollIntoView({behavior: 'instant', block: 'center'});
+                            b.click();
+                            return {clicked: true, text: txt};
+                        }
+                    }
+                    return {clicked: false};
+                })())
+            """)
+            try:
+                res = json.loads(raw)
+                if res.get("clicked"):
+                    logger.info("TurnstileSolver (DataNodes): clicked 'Free Download' button (%s)", res.get("text"))
+                    clicked_free = True
+                    break
+            except Exception:
+                pass
+
+        if not clicked_free:
+            raise RuntimeError("Could not find or click 'Free Download' button on DataNodes. Cloudflare challenge may have timed out or IP may be flagged.")
+
+        logger.info("TurnstileSolver (DataNodes): waiting out countdown for direct download URL...")
+        for sec in range(30):
+            if self._stop_requested:
+                raise RuntimeError("Solver stopped while waiting for DataNodes download link.")
+            await asyncio.sleep(1)
+            if direct_url:
+                break
+                
+            # Check intercepted fetch or DOM links
+            raw_check = await tab.evaluate("""
+                JSON.stringify((() => {
+                    if (window.__dn_direct_url) {
+                        return {url: window.__dn_direct_url};
+                    }
+                    const links = Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h && (h.includes('dlproxy') || h.includes('.rar') || (h.includes(':8080') && !h.includes('datanodes.to/app'))));
+                    return {url: links.length ? links[0] : null};
+                })())
+            """)
+            try:
+                check_data = json.loads(raw_check)
+                if check_data.get("url"):
+                    direct_url = check_data.get("url")
+                    logger.info("TurnstileSolver (DataNodes): captured direct URL from page state: %s", direct_url[:60])
+                    break
+            except Exception:
+                pass
+
+        if not direct_url:
+            raise RuntimeError("DataNodes did not produce a direct download link after the countdown.")
+
+        return direct_url
+
+    async def _resolve_direct_link_async(self, link):
         async with self._browser_lock:
             await self._ensure_browser()
             try:
@@ -240,101 +433,12 @@ class TurnstileSolver:
                 await self._ensure_browser()
                 tab = await self._navigate(link)
 
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
 
-            challenge_state = await tab.evaluate(
-                "JSON.stringify({token:window.turnstileToken||"
-                "document.querySelector('[name=\"cf-turnstile-response\"]')?.value||'',"
-                "hasWidget:!!(document.querySelector('.cf-turnstile')||"
-                "document.querySelector('[name=\"cf-turnstile-response\"]')||"
-                "document.querySelector('iframe[src*=\"turnstile\"]'))})",
-                return_by_value=True,
-            )
-            try:
-                challenge_state = json.loads(challenge_state) if isinstance(challenge_state, str) else {}
-            except (TypeError, ValueError):
-                challenge_state = {}
-
-            token = challenge_state.get("token", "")
-            has_widget = bool(challenge_state.get("hasWidget"))
-            logger.info("TurnstileSolver: has_widget=%s token_present=%s", has_widget, bool(len(token) > 20))
-
-            if has_widget and len(token) <= 20:
-                for attempt in range(self.MAX_ATTEMPTS):
-                    for i in range(self.TOKEN_TIMEOUT):
-                        if self._stop_requested:
-                            raise RuntimeError("Solver stopped while waiting for token.")
-                        try:
-                            raw = await asyncio.wait_for(tab.evaluate(
-                                "JSON.stringify(window.turnstileToken || "
-                                "document.querySelector('[name=\"cf-turnstile-response\"]')?.value || null)",
-                                return_by_value=True,
-                            ), timeout=2.0)
-                        except Exception:
-                            raw = None
-                            
-                        if isinstance(raw, str):
-                            try:
-                                token = json.loads(raw)
-                            except (TypeError, ValueError):
-                                token = None
-                            if isinstance(token, str) and len(token) > 20:
-                                logger.info("TurnstileSolver: token received after %ss", i + 1)
-                                break
-                        if i % 5 == 0:
-                            logger.info("TurnstileSolver: waiting for token; attempt=%s elapsed=%ss", attempt + 1, i)
-                        await asyncio.sleep(1)
-                        
-                    if isinstance(token, str) and len(token) > 20:
-                        break
-                        
-                    if attempt < self.MAX_ATTEMPTS - 1:
-                        logger.warning("TurnstileSolver: no token yet; recreating tab and retrying navigation")
-                        self._tab = None  # Force tab replacement
-                        tab = await self._navigate(link)
-                        await asyncio.sleep(3)
-
-                if not isinstance(token, str) or len(token) <= 20:
-                    raise RuntimeError(
-                        f"Cloudflare Turnstile did not produce a token after {self.TOKEN_TIMEOUT} seconds. "
-                        "Your IP may be flagged or the site may require an interactive challenge."
-                    )
-
-            fetch_js = (
-                "(async()=>{const r=await fetch('/f/" + file_id + "/go',"
-                "{method:'POST',headers:{'HX-Request':'true','HX-Target':'',"
-                "'HX-Current-URL':'" + link + "','Referer':'" + link + "'},"
-                "body:new URLSearchParams({'cf-turnstile-response':window.turnstileToken||"
-                "document.querySelector('[name=\"cf-turnstile-response\"]')?.value||''})});"
-                "const h=r.headers.get('Hx-Redirect')||r.headers.get('hx-redirect');"
-                "const t=await r.text();"
-                "return JSON.stringify({status:r.status,hxRedirect:h,"
-                "bodyLen:t.length,bodyHead:t.substring(0,200)});})()"
-            )
-
-            raw = await tab.evaluate(fetch_js, await_promise=True, return_by_value=True)
-
-            if isinstance(raw, dict):
-                result = raw
-            elif isinstance(raw, str):
-                try:
-                    result = json.loads(raw)
-                except Exception:
-                    result = json.loads(raw.replace("\\'", "'").replace('\\"', '"'))
+            if "datanodes.to" in link.lower():
+                direct_url = await self._resolve_datanodes_async(link, tab)
             else:
-                raise RuntimeError(f"Unexpected fetch result type: {type(raw)}")
-
-            status = result.get("status")
-            direct_url = result.get("hxRedirect")
-            logger.info(
-                "TurnstileSolver: POST /go status=%s redirect=%s body=%s",
-                status, bool(direct_url), result.get("bodyHead", "")[:200],
-            )
-            if status != 200 or not direct_url:
-                raise RuntimeError(
-                    f"Could not resolve direct link. POST /go returned HTTP {status}. "
-                    f"Response: {result.get('bodyHead', '')}"
-                )
+                direct_url = await self._resolve_fuckingfast_async(link, tab)
 
             ua_raw = await tab.evaluate("JSON.stringify(navigator.userAgent)", return_by_value=True)
             user_agent = json.loads(ua_raw) if isinstance(ua_raw, str) else str(ua_raw)

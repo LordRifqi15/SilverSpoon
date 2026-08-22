@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.5.1] - 2026-08-22
+
+### New Features
+* **DataNodes (`datanodes.to`) Provider Support**: Added native support for downloading from `datanodes.to` links. SilverSpoon automatically bypasses Cloudflare Turnstile, handles the countdown sequence, and captures direct CDN download links with resume and chunk streaming support.
+* **Smart URL & Filename Decoding**: Added automatic percent-encoding unquoting to ensure downloaded files and batch folder suggestions have clean, readable names across all supported providers.
+
+### Fixes & Improvements
+* **Build Size Reduction**: Excluded unused packages (`cv2`, `numpy`, `matplotlib`, `scipy`, `pandas`, `torch`, `PIL`, `PyQt6.QtPdf`, etc.) and pruned unnecessary Chromium locales and background service binaries, saving ~187 MB uncompressed.
+* **Build Process Safety**: Added automatic termination of active instances in `build_exe.bat` to prevent file-locking permissions errors during PyInstaller compilation.
+
 ## [v1.5.0] - 2026-08-21
 
 ### New Features
