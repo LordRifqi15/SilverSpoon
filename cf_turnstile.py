@@ -347,7 +347,7 @@ class TurnstileSolver:
                 f"Could not resolve direct link. POST /go returned HTTP {status}. "
                 f"Response: {result.get('bodyHead', '')}"
             )
-        return direct_url
+        return direct_url, token
 
     async def _resolve_datanodes_async(self, link, tab):
         direct_url = None
@@ -462,8 +462,9 @@ class TurnstileSolver:
 
             if "datanodes.to" in link.lower():
                 direct_url = await self._resolve_datanodes_async(link, tab)
+                token = ""
             else:
-                direct_url = await self._resolve_fuckingfast_async(link, tab)
+                direct_url, token = await self._resolve_fuckingfast_async(link, tab)
 
             ua_raw = await tab.evaluate("JSON.stringify(navigator.userAgent)", return_by_value=True)
             user_agent = json.loads(ua_raw) if isinstance(ua_raw, str) else str(ua_raw)
