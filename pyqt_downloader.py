@@ -1094,6 +1094,7 @@ class MainWindow(QMainWindow):
         self._last_token_at = 0.0
         self._token_cookies = {}
         self.TOKEN_TTL = 240
+        self._token_lock = threading.Lock()
         self.is_all_selected = False
         self.extracted_folders = set()
         
@@ -1650,6 +1651,8 @@ class MainWindow(QMainWindow):
         task.status = "Resolving Direct Link..."
         url, err = "", ""
         try:
+            # Fast path: try cached token without locking — lets N links
+            # resolve in parallel via curl (0.3s each) after the first solve.
             token = (
                 self._last_token
                 if time.time() - self._last_token_at < self.TOKEN_TTL
@@ -1659,19 +1662,46 @@ class MainWindow(QMainWindow):
                 try:
                     url = self._resolve_via_token(task.link, token)
                 except Exception as e:
-                    # Only a rejection (403) means the token is dead; transient
-                    # errors must not nuke the shared token for the other tasks.
                     if "403" in str(e):
-                        self._last_token = None
+                        with self._token_lock:
+                            if self._last_token == token:
+                                self._last_token = None
                     url = ""
-            if not url:
+                if url:
+                    task._dl_url = url
+                    task._dl_cookies = self._token_cookies
+                    if task.status == "Resolving Direct Link...":
+                        task.status = prev_status
+                    return url, ""
+            # Need a browser solve — singleflight: only one thread solves,
+            # others wait for the token and then use it.
+            with self._token_lock:
+                # Re-check after acquiring lock (another thread may have solved).
+                token = (
+                    self._last_token
+                    if time.time() - self._last_token_at < self.TOKEN_TTL
+                    else None
+                )
+                if token:
+                    try:
+                        url = self._resolve_via_token(task.link, token)
+                    except Exception as e:
+                        if "403" in str(e) and self._last_token == token:
+                            self._last_token = None
+                        url = ""
+                    if url:
+                        task._dl_url = url
+                        task._dl_cookies = self._token_cookies
+                        if task.status == "Resolving Direct Link...":
+                            task.status = prev_status
+                        return url, ""
                 result = self.turnstile_solver.get_direct_link(task.link)
                 url = result.get("direct_url") or ""
                 task._dl_user_agent = result.get("user_agent", "")
                 self._store_token(result)
-            if url:
-                task._dl_url = url
-                task._dl_cookies = self._token_cookies
+                if url:
+                    task._dl_url = url
+                    task._dl_cookies = self._token_cookies
         except Exception as e:
             err = str(e)
         if task.status == "Resolving Direct Link...":
