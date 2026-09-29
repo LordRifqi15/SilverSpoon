@@ -1637,13 +1637,26 @@ class MainWindow(QMainWindow):
         return url
 
     def _store_token(self, result):
-        token = result.get("token") or ""
-        if len(token) > 20:
-            self._last_token = token
-            self._last_token_at = time.time()
-            self._token_cookies = result.get("cookies", {})
-            for k, v in self._token_cookies.items():
-                self.dl_session.cookies.set(k, v)
+        """Cache the cleared browser session (cf_clearance) + optional token.
+
+        The host authorises /go with the cf_clearance cookie. The Turnstile
+        token is a secondary path and is often EMPTY on a warm profile (no
+        widget -> nothing to solve), so caching keyed on the token stored
+        nothing and every link re-opened a browser.
+        """
+        cookies = result.get("cookies") or {}
+        if not cookies:
+            return
+        self._last_token = result.get("token") or ""
+        self._last_token_at = time.time()
+        self._token_cookies = cookies
+        for k, v in cookies.items():
+            self.dl_session.cookies.set(k, v)
+
+    def _has_cached_session(self):
+        return bool(self._token_cookies) and (
+            time.time() - self._last_token_at < self.TOKEN_TTL
+        )
 
     def _resolve_task_url(self, task):
         """Resolve direct link in background thread; stash on task. Returns (url, error)."""
@@ -1651,21 +1664,17 @@ class MainWindow(QMainWindow):
         task.status = "Resolving Direct Link..."
         url, err = "", ""
         try:
-            # Fast path: try cached token without locking — lets N links
-            # resolve in parallel via curl (0.3s each) after the first solve.
-            token = (
-                self._last_token
-                if time.time() - self._last_token_at < self.TOKEN_TTL
-                else None
-            )
-            if token:
+            # Fast path: reuse the cached cleared session (cf_clearance) with a
+            # plain curl POST — no lock, so N links resolve in parallel
+            # (~0.3s each) after the first browser solve.
+            if self._has_cached_session():
                 try:
-                    url = self._resolve_via_token(task.link, token)
+                    url = self._resolve_via_token(task.link, self._last_token)
                 except Exception as e:
                     if "403" in str(e):
                         with self._token_lock:
-                            if self._last_token == token:
-                                self._last_token = None
+                            self._token_cookies = {}
+                            self._last_token = None
                     url = ""
                 if url:
                     task._dl_url = url
@@ -1674,20 +1683,14 @@ class MainWindow(QMainWindow):
                         task.status = prev_status
                     return url, ""
             # Need a browser solve — singleflight: only one thread solves,
-            # others wait for the token and then use it.
+            # the others wait for the session and then reuse it.
             with self._token_lock:
-                # Re-check after acquiring lock (another thread may have solved).
-                token = (
-                    self._last_token
-                    if time.time() - self._last_token_at < self.TOKEN_TTL
-                    else None
-                )
-                if token:
+                if self._has_cached_session():
                     try:
-                        url = self._resolve_via_token(task.link, token)
-                    except Exception as e:
-                        if "403" in str(e) and self._last_token == token:
-                            self._last_token = None
+                        url = self._resolve_via_token(task.link, self._last_token)
+                    except Exception:
+                        self._token_cookies = {}
+                        self._last_token = None
                         url = ""
                     if url:
                         task._dl_url = url

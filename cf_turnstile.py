@@ -312,6 +312,21 @@ class TurnstileSolver:
                     "Your IP may be flagged or the site may require an interactive challenge."
                 )
 
+        # Re-read the token right before posting: on a warm profile the widget
+        # often appears after the first check, and the value the POST actually
+        # uses is the one worth caching for the next links.
+        try:
+            fresh = await tab.evaluate(
+                "JSON.stringify(window.turnstileToken || "
+                "document.querySelector('[name=\"cf-turnstile-response\"]')?.value || '')",
+                return_by_value=True,
+            )
+            fresh = json.loads(fresh) if isinstance(fresh, str) else ""
+            if isinstance(fresh, str) and len(fresh) > 20:
+                token = fresh
+        except Exception:
+            pass
+
         fetch_js = (
             "(async()=>{const r=await fetch('/f/" + file_id + "/go',"
             "{method:'POST',headers:{'HX-Request':'true','HX-Target':'',"
